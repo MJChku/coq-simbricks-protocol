@@ -6,6 +6,7 @@ From ExtLib.Structures Require Import Monads.
 Export MonadNotation.
 Open Scope monad_scope.
 Open Scope nat_scope.
+Require Import Lia.
 Import ListNotations.
 
 (* --------------------------------------------------- *)
@@ -148,6 +149,90 @@ Fixpoint insert_ts (e : TimedEvent) (q : EventQueue) : EventQueue :=
 Definition enq_event_ord (e : TimedEvent) : State unit :=
   fun '(h, (tr, q)) => (tt, (h, (tr, insert_ts e q))).
 
+Fixpoint sorted_ts (q : list TimedEvent) : Prop :=
+  match q with
+  | [] | [_] => True
+  | (_,t1) :: ((_,t2) :: tl) as tail => t1 <= t2 /\ sorted_ts tail
+  end.
+
+Lemma insert_ts_length :
+  forall e q, length (insert_ts e q) = S (length q).
+Proof.
+  intros [ev' ts'] q; induction q as [|[ev ts] q IH]; simpl; auto.
+  destruct (Nat.leb ts' ts); simpl; lia.
+Qed.
+
+Lemma enq_event_ord_length :
+  forall cfg e,
+    length (get_queue (snd (enq_event_ord e cfg))) =
+    S (length (get_queue cfg)).
+Proof.
+  intros. 
+  destruct cfg as [h [tr q]].
+  unfold enq_event_ord. 
+  unfold get_queue.
+  simpl. 
+  apply insert_ts_length.
+Qed.
+
+Lemma insert_ts_in :
+  forall e q, In e (insert_ts e q).
+Proof.
+  intros e q; induction q as [|x q IH]; simpl in *.
+  - destruct e as [ev ts]. 
+    simpl. firstorder.
+  - destruct e as [ev ts']; destruct x as [ev' ts].
+    destruct (ts' <=? ts) eqn:Hle; simpl.
+    firstorder.
+    firstorder.
+Qed.
+
+Lemma insert_ts_sorted_list :
+  forall e q,
+    sorted_ts q ->
+    sorted_ts (insert_ts e q).
+Proof.
+  intros [ev' ts'] q Hs.
+  induction q; simpl in *.
+  - trivial.
+  - destruct a as [ev ts].
+    destruct (Nat.leb ts' ts) eqn:Hcmp.
+    + apply Nat.leb_le in Hcmp. firstorder.
+    + apply Nat.leb_gt in Hcmp. firstorder.
+      destruct q as [| (ev2,t2) q'] eqn:Eq; simpl in *.
+      lia. subst.
+      destruct ( ts' <=? t2) eqn: Hcmp2.
+      apply Nat.leb_le in Hcmp2. firstorder. lia.
+      firstorder.
+Qed.
+
+
+Lemma insert_ts_sorted :
+  forall cfg e,
+    sorted_ts (get_queue cfg) ->
+    sorted_ts (insert_ts e (get_queue cfg)).
+Proof.
+  unfold get_queue in *.
+  intros.
+  destruct cfg as [h [tr q]] eqn:Hcfg.
+  simpl in *.
+  apply insert_ts_sorted_list.
+  apply H.
+Qed.
+
+Lemma enq_event_ord_sorted :
+  forall cfg e,
+    sorted_ts (get_queue cfg) ->
+    sorted_ts (get_queue (snd (enq_event_ord e cfg))).
+Proof.
+  intros.
+  unfold get_queue in *.
+  unfold enq_event_ord.
+  destruct cfg as [h [tr q]] eqn:Hcfg.
+  simpl in *.
+  apply insert_ts_sorted_list.
+  apply H.
+Qed.
 
 Definition demo : State unit :=
   ret tt.
@@ -340,12 +425,44 @@ Lemma consume_loop_bounded :
       = (res, (h', (tr', p'))) ->
     bounded_trace tr' link_delay.
 Proof.
-  intros.
 Admitted.
 
 Lemma consume_events_bounded_trace :
   forall ts start_ts delay link_delay cfg res cfg',
     consume_events ts start_ts delay link_delay cfg = (res, cfg') ->
-    bounded_trace (snd cfg') link_delay.
+    bounded_trace (get_trace cfg') link_delay.
 Proof.
 Admitted.
+
+Lemma send_out_sync_cnt_inc_one : 
+  forall ptr_last_sync cur_ts link_delay h tr q u cfg',
+    let (option_ts, _) := read ptr_last_sync (mkConfig h tr q) in 
+    option_ts <> None ->
+    let ts := match option_ts with Some n => n | None => 0 end in
+    ts + link_delay <= cur_ts ->
+    send_out_sync ptr_last_sync cur_ts link_delay
+                  (mkConfig h tr q) = (u, cfg') ->
+    length (get_queue cfg') >= length q + 1.
+Proof.
+Admitted.
+
+Lemma send_out_sync_gap :
+  forall ptr_last_sync cur_ts link_delay h tr q u cfg',
+    send_out_sync ptr_last_sync cur_ts link_delay
+                  (mkConfig h tr q) = (u, cfg') ->
+    let q' := get_queue cfg' in
+    match rev q', rev q with
+    | (SYNC,t')::_, (SYNC,t)::_ => t' - t <= link_delay
+    | _, _ => True
+    end.
+Proof.
+  induction q. 
+  - intros. simpl in *. destruct q'. simpl in *. auto. 
+    + destruct (rev (t :: q')) eqn:E; simpl in *. auto. 
+    destruct t0; destruct e; try trivial.
+  - intros. simpl in *. destruct q'. simpl in *. auto. 
+    + destruct (rev (t :: q')) eqn:E; simpl in *. auto. 
+    destruct t0; destruct e; try trivial.
+Admitted.
+
+
