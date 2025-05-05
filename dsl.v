@@ -5,6 +5,7 @@ Require Import Arith.
 From ExtLib.Structures Require Import Monads.
 Export MonadNotation.
 Open Scope monad_scope.
+Open Scope nat_scope.
 Import ListNotations.
 
 (* --------------------------------------------------- *)
@@ -18,22 +19,32 @@ End DSL_SIG.
 Module MakeDSL (M : DSL_SIG).
   Import M.
 
-  (* --- 2.1  Heap, Trace, Config -------------------- *)
-  Definition Heap   : Type := list (nat * V).
-  Definition Trace  : Type := list TE.
-  Definition Config : Type := (Heap * Trace)%type.
+  (* --- 2.1  Heap, Trace, EventQueue, Config -------- *)
+  Definition Heap       : Type := list (nat * V).
+  Definition Trace      : Type := list TE.
+  Definition EventQueue : Type := list TE.
+
+  Definition Config : Type := Heap * (Trace * EventQueue)%type.
+
+  Definition get_heap (c : Config) : Heap := fst c.
+  Definition get_trace (c : Config) : Trace := fst (snd c).
+  Definition get_queue (c : Config) : EventQueue := snd (snd c).
+
+  Definition mkConfig (h : Heap) (tr : Trace) (q : EventQueue) : Config :=
+    (h, (tr, q)).
 
   (* --- 2.2  State monad ---------------------------- *)
   Definition State (A : Type) : Type := Config -> (A * Config).
 
   Definition ret {A} (a : A) : State A := fun cfg => (a, cfg).
+
   Definition bind {A B} (m : State A) (k : A -> State B) : State B :=
     fun cfg => let (a, cfg') := m cfg in k a cfg'.
 
-  (* Register State as an instance of the ext-lib Monad typeclass *)
-  #[global] Instance Monad_State : Monad State :=
-  { ret  := @ret
-  ; bind := @bind }.
+  #[global] Instance Monad_State : Monad State := {
+    ret  := @ret;
+    bind := @bind
+  }.
 
   (* --- 2.3  Heap operations ------------------------ *)
   Definition heap_empty : Heap := [].
@@ -58,25 +69,35 @@ Module MakeDSL (M : DSL_SIG).
     fold_left (fun m '(p,_) => Nat.max m p) h 0.
 
   (* --- 2.4  Primitive actions ---------------------- *)
-  Definition new : State nat :=
-    fun '(h, tr) =>
+  Definition new (init : V) : State nat :=
+    fun '(h,(tr,q)) =>
       let p := S (max_ptr h) in
-      (p, (h, tr)).
+      let h' := heap_update h p (Some init) in
+      (p, mkConfig h' tr q).
 
   Definition read (p : nat) : State (option V) :=
-    fun '(h, tr) => (heap_lookup p h, (h, tr)).
+    fun '(h,(tr,q)) =>
+      (heap_lookup p h, mkConfig h tr q).
 
   Definition write (p : nat) (v : V) : State unit :=
-    fun '(h, tr) => (tt, (heap_update h p (Some v), tr)).
+    fun '(h,(tr,q)) =>
+      let h' := heap_update h p (Some v) in
+      (tt, mkConfig h' tr q).
 
   Definition delete (p : nat) : State unit :=
-    fun '(h, tr) => (tt, (heap_update h p None, tr)).
+    fun '(h,(tr,q)) =>
+      let h' := heap_update h p None in
+      (tt, mkConfig h' tr q).
 
-  Definition loge (e : TE) : State unit :=
-    fun '(h, tr) => (tt, (h, tr ++ [e]) ).
+  Definition enq_log (e : TE) : State unit :=
+    fun '(h,(tr,q)) =>
+      (tt, mkConfig h (tr ++ [e]) q).
 
-  Definition pass : State unit :=
-    fun '(h, tr) => (tt, (h, tr)).
+  Definition enq_event (e : TE) : State unit :=
+    fun '(h,(tr,q)) =>
+      (tt, mkConfig h tr (q ++ [e])).
+
+  Definition pass : State unit := fun cfg => (tt, cfg).
 
 End MakeDSL.
 
@@ -112,24 +133,26 @@ End EventInst.
 Module EventDSL := MakeDSL(EventInst).
 Import EventDSL.
 
-Fixpoint insert_ts (e : TimedEvent) (tr : Trace) : Trace :=
+
+Fixpoint insert_ts (e : TimedEvent) (q : EventQueue) : EventQueue :=
   let '(_, ts') := e in
-  match tr with
+  match q with
   | [] => [e]
-  | (ev, ts) :: tr' as full =>
+  | ((ev, ts) :: q') as full =>
       if Nat.leb ts' ts
       then e :: full               (* place before first >= timestamp *)
-      else (ev, ts) :: insert_ts e tr'
+      else (ev, ts) :: insert_ts e q'
   end.
 
 (* Override the plain [loge] with an ordered version *)
-Definition loge_ord (e : TimedEvent) : State unit :=
-  fun '(h, tr) => (tt, (h, insert_ts e tr)).
+Definition enq_event_ord (e : TimedEvent) : State unit :=
+  fun '(h, (tr, q)) => (tt, (h, (tr, insert_ts e q))).
+
 
 Definition demo : State unit :=
   ret tt.
 
-Definition init_cfg : Config := (heap_empty, []). 
+Definition init_cfg : Config := mkConfig heap_empty [] []. 
 
 Compute demo init_cfg.
 
@@ -139,7 +162,7 @@ Fixpoint consume (ts : list TimedEvent) : State unit :=
   match ts with
   | [] => ret tt
   | t :: ts' =>
-      loge t ;;            (* record t in our trace B *)
+      enq_log t ;;            (* record t in our trace B *)
       consume ts'
   end.
 
@@ -147,55 +170,91 @@ Fixpoint consume (ts : list TimedEvent) : State unit :=
 Lemma consume_extends_trace :
   forall ts cfg res cfg',
     consume ts cfg = (res, cfg') ->
-    length (snd cfg') = length (snd cfg) + length ts.
+    length (get_trace cfg') = length (get_trace cfg) + length ts.
 Proof.
-Admitted.
-  (* induction ts as [|t ts IH]; intros [h tr] res [h' tr'] Hrun.
+induction ts as [|t ts IH]; intros [h [tr q]] res [h' [tr' q']] Hrun.
   - (* ts = [] *) simpl in Hrun. inversion Hrun. firstorder.
   - (* ts = t :: ts *)
-    simpl in Hrun. unfold loge in Hrun. unfold bind in Hrun.
-    remember (consume ts (h, tr ++ [t])) as R eqn:E.
-    destruct R as [res2 [h2 tr2]]. inversion Hrun; subst; clear Hrun.
+    simpl in Hrun. unfold enq_log in Hrun. unfold bind in Hrun.
+    remember (consume ts (h, (tr ++ [t], q))) as R eqn:E.
+    destruct R as [res2 [h2 [tr2 q2]]]. inversion Hrun; subst; clear Hrun.
     symmetry in E. 
-    assert( (res2 , (h2 , tr2)) = (res, (h', tr'))).
+    assert( (res2 , (h2, (tr2, q2))) = (res, (h', (tr', q')))).
     {
-      replace (res, (h', tr')) with (consume ts (h, tr ++ [t])).
+      replace (res, (h', (tr', q'))) with (consume ts (mkConfig h (tr ++ [t]) q)).
       symmetry in E. apply E.
     }
     inversion H.
-    specialize (IH (h, tr ++ [t]) res2 (h2, tr2) E). simpl in IH.
+    specialize (IH (h, (tr ++ [t], q)) res2 (h2, (tr2, q2)) E). simpl in IH.
     subst.
+    unfold get_trace in *. simpl in *.
     rewrite app_length in IH. simpl in IH. simpl in *. rewrite IH. rewrite <- Nat.add_assoc. reflexivity.
-Qed. *)
+Qed.
 
 (** Process a single timed event ********************************************)
 Definition process_event (t : TimedEvent) (my_ts delay : nat) : State unit :=
   match t with
-  | (MMIO_READ_REQ , _) => loge_ord (MMIO_READ_RESP , my_ts + delay)
-  | (DMA_READ_REQ , _)  => loge_ord (DMA_READ_RESP , my_ts + delay)
-  | _                   => ret tt                        (* responses → no log *)
+  | (MMIO_READ_REQ , _) => enq_event_ord (MMIO_READ_RESP, my_ts + delay)
+  | (DMA_READ_REQ , _)  => enq_event_ord (DMA_READ_RESP, my_ts + delay)
+  | _                   => ret tt                  
   end.
+
+
+Definition start_cfg : Config := mkConfig heap_empty [] [].
+
+Definition test_event_queue : State unit :=
+  enq_event_ord (MMIO_READ_RESP, 1) ;;
+  enq_event_ord (MMIO_READ_RESP, 1) ;;
+  enq_event_ord (MMIO_READ_RESP, 1) ;;
+  enq_event_ord (MMIO_READ_RESP, 1) ;;
+  ret tt.
+
+Compute (let '(_, cfg') := test_event_queue start_cfg in
+         (get_heap cfg', get_queue cfg', get_trace cfg')).
 
 Require Import Program.Wf.
 Require Import Lia.
 
 Program Fixpoint send_sync_event
         (last_ts gap link_delay : nat)
-        (should_loge : bool)
+        (should_enq_log : bool)
         { measure (gap) } : State nat :=
   match link_delay with
   | 0 => ret last_ts
   | _ =>
-    match gap, should_loge with 
+    match gap, should_enq_log with 
     | 0, false => ret (last_ts - link_delay)
-    | 0, true => loge_ord (SYNC, last_ts) ;; ret last_ts
-    | _, true => loge_ord (SYNC, last_ts) ;;
+    | 0, true => enq_event_ord (SYNC, last_ts) ;; ret last_ts
+    | _, true => enq_event_ord (SYNC, last_ts) ;;
               send_sync_event (last_ts + link_delay) (gap-link_delay) link_delay (Nat.leb link_delay gap)
     | _, false => send_sync_event (last_ts + link_delay) (gap-link_delay) link_delay (Nat.leb link_delay gap) 
     end
   end.
 Next Obligation. lia. Qed.
 Next Obligation. lia. Qed. 
+
+Definition send_out_sync (ptr_last_sync my_ts link_delay : nat) : State unit :=
+  cur_last_sync_opt <- read ptr_last_sync ;;
+  let cur_last_sync := match cur_last_sync_opt with Some n => n | None => 0 end in
+  loged_ts <- send_sync_event cur_last_sync (my_ts - cur_last_sync) link_delay false ;;
+  let next_sync_ts := if Nat.leb loged_ts cur_last_sync then cur_last_sync else loged_ts in 
+  write ptr_last_sync next_sync_ts ;; 
+  ret tt.
+
+Fixpoint commit_q (q : EventQueue) (my_ts : nat) (h : Heap) (tr : Trace) : (unit * Config) :=
+  match q with
+  | [] => (tt, (h, (tr, [])))
+  | (ev, ts) :: qs =>
+    if Nat.leb ts my_ts then
+      let tr' := tr ++ [(ev, ts)] in
+      commit_q qs my_ts h tr'
+    else
+      (tt, (h, (tr, (ev, ts) :: qs)))
+  end.
+
+Definition commit_events (my_ts : nat) : State unit :=
+  fun '(h,(tr,q)) =>
+    commit_q q my_ts h tr.
 
 (** Recursive consumer ******************************************************)
 Fixpoint consume_loop
@@ -209,15 +268,21 @@ Fixpoint consume_loop
   | []        => ret tt
   | (ev, ts_now) :: ts'  =>
           cur_opt <- read ptr ;;
-          cur_last_sync_opt <- read ptr_last_sync ;;
-          let cur_last_sync := match cur_last_sync_opt with Some n => n | None => 0 end in
-          let cur := match cur_opt with Some n => n | None => 0 end in
-          let cur' := if Nat.ltb cur ts_now then ts_now else cur in
-          write ptr cur' ;;
-          loged_ts <- send_sync_event cur_last_sync (cur' - cur_last_sync) link_delay false ;;
-          let next_sync_ts := if Nat.leb loged_ts cur_last_sync then cur_last_sync else loged_ts in 
-          write ptr_last_sync next_sync_ts ;; 
-          process_event (ev, ts_now) cur dly ;;
+          let cur_ts := match cur_opt with Some n => n | None => 0 end in
+
+          (* let cur_ts := if Nat.ltb cur_ts ts_now then ts_now else cur_ts in *)
+          let cur_ts := ts_now in
+          write ptr cur_ts ;;
+          
+          (* send periodic sync message*)
+          send_out_sync ptr_last_sync cur_ts link_delay ;;
+
+          (* process one incoming event*)
+          process_event (ev, ts_now) cur_ts dly ;;
+
+           (* commit all events *)
+          commit_events cur_ts ;;
+
           consume_loop ts' ptr ptr_last_sync dly link_delay
   end.
 
@@ -227,13 +292,11 @@ Definition consume_events
         (delay    : nat)
         (link_delay    : nat)
         : State unit :=
-  p <- new ;;
-  p2 <- new ;;
-  _ <- write p start_ts ;;
-  _ <- write p2 start_ts ;;
+  p <- new 0 ;;
+  p2 <- new 0;;
+  write p start_ts ;;
+  write p2 start_ts ;;
   consume_loop ts p p2 delay link_delay.
-
-Open Scope nat_scope.
 
 (*--------------------------------------------------------------------*)
 (** A trace is “link-bounded” if successive timestamps differ ≤ k ****)
@@ -247,7 +310,42 @@ Fixpoint bounded_trace
          (k  : nat) : Prop :=
   match tr with
   | [] | [_] => True
-  | t1 :: (t2 :: rest as tail) =>  
+  | t1 :: ((t2 :: rest) as tail) =>  
         gap_ok k t1 t2
       /\ bounded_trace tail k  
   end.
+
+
+Definition sample_events : list TimedEvent :=
+  [ (MMIO_READ_REQ, 1);
+    (MMIO_READ_REQ, 1);
+    (MMIO_READ_REQ, 1);
+    (MMIO_READ_REQ, 1);
+    (DMA_READ_REQ , 3);
+    (MMIO_READ_REQ, 7) 
+    ].
+
+
+(* Run consume_events with start_ts = 0, delay = 1, link_delay = 2 *)
+Compute (let '(_, cfg') := consume_events sample_events 0 1 2 start_cfg in
+         (get_heap cfg', get_queue cfg', get_trace cfg')).
+
+(* Check boundedness with maximum gap k = 2 *)
+Compute (let '(_, cfg') := consume_events sample_events 0 1 2 start_cfg in
+         bounded_trace (get_trace cfg') 2).
+
+Lemma consume_loop_bounded :
+  forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p',
+    consume_loop ts ptr ptr_last_sync delay link_delay (h, (tr, p)) 
+      = (res, (h', (tr', p'))) ->
+    bounded_trace tr' link_delay.
+Proof.
+  intros.
+Admitted.
+
+Lemma consume_events_bounded_trace :
+  forall ts start_ts delay link_delay cfg res cfg',
+    consume_events ts start_ts delay link_delay cfg = (res, cfg') ->
+    bounded_trace (snd cfg') link_delay.
+Proof.
+Admitted.
