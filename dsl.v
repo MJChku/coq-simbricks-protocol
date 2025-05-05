@@ -85,8 +85,28 @@ Module NatInst <: DSL_SIG.
 End NatInst.
 
 (* 4. Instantiate the functor with this module *)
-Module NatDSL := MakeDSL(NatInst).
-Import NatDSL.
+(* Module NatDSL := MakeDSL(NatInst). *)
+(* Import NatDSL. *)
+
+
+Inductive Event : Type :=
+| MMIO_READ_REQ
+| MMIO_READ_RESP
+| DMA_READ_REQ
+| DMA_READ_RESP.
+
+Definition TimedEvent : Type := (Event * nat).
+
+
+(* Provide an instance of the DSL that records these events *)
+(* Provide an instance of the DSL that records **event × timestamp** pairs *)
+Module EventInst <: DSL_SIG.
+  Definition V  := nat.
+  Definition TE := TimedEvent.   (* an event tagged with a timestamp *)
+End EventInst.
+
+Module EventDSL := MakeDSL(EventInst).
+Import EventDSL.
 
 Definition demo : State unit :=
   ret tt.
@@ -97,7 +117,7 @@ Compute demo init_cfg.
 
 (* --------------------------------------------------- *)
 (** 6. A looping program that consumes an external list and logs it *)
-Fixpoint consume (ts : list nat) : State unit :=
+Fixpoint consume (ts : list TimedEvent) : State unit :=
   match ts with
   | [] => ret tt
   | t :: ts' =>
@@ -128,3 +148,5 @@ Proof.
     subst.
     rewrite app_length in IH. simpl in IH. simpl in *. rewrite IH. rewrite <- Nat.add_assoc. reflexivity.
 Qed.
+
+
