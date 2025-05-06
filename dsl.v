@@ -281,7 +281,8 @@ Definition process_event (t : TimedEvent) (my_ts delay : nat) : State unit :=
   match t with
   | (MMIO_READ_REQ , _) => enq_event_ord (MMIO_READ_RESP, my_ts + delay)
   | (DMA_READ_REQ , _)  => enq_event_ord (DMA_READ_RESP, my_ts + delay)
-  | _                   => ret tt                  
+  | (SYNC, _)           => enq_event_ord (DMA_READ_RESP, my_ts )      
+  | (_, _) => ret tt            
   end.
 
 
@@ -300,6 +301,8 @@ Compute (let '(_, cfg') := test_event_queue start_cfg in
 Require Import Program.Wf.
 Require Import Lia.
 
+(* removed the following, because too hard to prove anything about it*)
+(* 
 Program Fixpoint send_sync_event
         (last_ts gap link_delay : nat)
         (should_enq_log : bool)
@@ -324,7 +327,34 @@ Definition send_out_sync (ptr_last_sync my_ts link_delay : nat) : State unit :=
   loged_ts <- send_sync_event cur_last_sync (my_ts - cur_last_sync) link_delay false ;;
   let next_sync_ts := if Nat.leb loged_ts cur_last_sync then cur_last_sync else loged_ts in 
   write ptr_last_sync next_sync_ts ;; 
-  ret tt.
+  ret tt. *)
+
+(* Lemma send_sync_event_increases_trace :
+  forall ptr_last_sync my_ts link_delay last_value_opt cfg res cfg',
+    (* reading the last‐sync pointer *)
+    read ptr_last_sync cfg = (last_value_opt, cfg) ->
+    let cur_last_sync := match last_value_opt with Some n => n | None => 0 end in
+    (* the condition to log at least one SYNC *)
+    Nat.eqb (cur_last_sync+link_delay) my_ts = true ->
+    (* run send_sync_event with should_log = true *)
+    send_sync_event cur_last_sync
+                    (my_ts - cur_last_sync)
+                    link_delay
+                    false
+                    cfg
+    = (res, cfg') ->
+    (* the trace in cfg' is strictly longer than the trace in cfg *)
+    length (get_queue cfg) < length (get_queue cfg').
+Proof. *)
+  (* intros. 
+  destruct cfg as [h [tr q]]. 
+  destruct cfg' as [h' [tr' q']]. 
+  destruct last_value_opt; simpl in *. 
+  - clear H. subst. unfold cur_last_sync in *.
+    apply Nat.eqb_eq in H0. subst. 
+    replace (v + link_delay - v) with link_delay in *.
+    unfold send_sync_event in H1. simpl in H1. *)
+(* Admitted. *)
 
 Fixpoint commit_q (q : EventQueue) (my_ts : nat) (h : Heap) (tr : Trace) : (unit * Config) :=
   match q with
@@ -358,9 +388,6 @@ Fixpoint consume_loop
           (* let cur_ts := if Nat.ltb cur_ts ts_now then ts_now else cur_ts in *)
           let cur_ts := ts_now in
           write ptr cur_ts ;;
-          
-          (* send periodic sync message*)
-          send_out_sync ptr_last_sync cur_ts link_delay ;;
 
           (* process one incoming event*)
           process_event (ev, ts_now) cur_ts dly ;;
@@ -390,23 +417,45 @@ Definition gap_ok (k : nat) (t1 t2 : TimedEvent) : Prop :=
   let '(_, ts2) := t2 in
   ts2 - ts1 <= k.
 
+Definition gap_exact (k : nat) (t1 t2 : TimedEvent) : Prop :=
+  let '(_, ts1) := t1 in
+  let '(_, ts2) := t2 in
+  ts2 - ts1 = k.
+
 Fixpoint bounded_trace         
          (tr : list TimedEvent)
-         (k  : nat) : Prop :=
+         (link_delay  : nat) : Prop :=
   match tr with
   | [] | [_] => True
   | t1 :: ((t2 :: rest) as tail) =>  
-        gap_ok k t1 t2
-      /\ bounded_trace tail k  
+        gap_ok link_delay t1 t2
+      /\ bounded_trace tail link_delay
   end.
+
+Fixpoint live_trace
+          (tr : list TimedEvent)
+          (link_delay  : nat) : Prop :=
+    match tr with
+    | [] | [_] => True
+    | t1 :: ((t2 :: rest) as tail) =>  
+          gap_exact link_delay t1 t2
+        /\ live_trace tail link_delay
+    end.
+  
+  (* Example events *)
+
 
 
 Definition sample_events : list TimedEvent :=
-  [ (MMIO_READ_REQ, 1);
+  [ (SYNC, 1);
     (MMIO_READ_REQ, 1);
     (MMIO_READ_REQ, 1);
     (MMIO_READ_REQ, 1);
+    (MMIO_READ_REQ, 1);
+    (SYNC, 3);
     (DMA_READ_REQ , 3);
+    (SYNC, 5);
+    (SYNC, 7);
     (MMIO_READ_REQ, 7) 
     ].
 
@@ -418,6 +467,13 @@ Compute (let '(_, cfg') := consume_events sample_events 0 1 2 start_cfg in
 (* Check boundedness with maximum gap k = 2 *)
 Compute (let '(_, cfg') := consume_events sample_events 0 1 2 start_cfg in
          bounded_trace (get_trace cfg') 2).
+
+(* Check liveness with exact gap k = 2 *)
+Compute let sync_trace:= filter (fun x => match x with (SYNC, _) => true | _ => false end) sample_events in
+        let '(_, cfg') := consume_events sync_trace 0 1 2 start_cfg in
+        live_trace (get_trace cfg') 2.
+
+(* Check that the trace is not live *)
 
 Lemma consume_loop_bounded :
   forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p',
@@ -434,7 +490,7 @@ Lemma consume_events_bounded_trace :
 Proof.
 Admitted.
 
-Lemma send_out_sync_cnt_inc_one : 
+(* Lemma send_out_sync_cnt_inc_one : 
   forall ptr_last_sync cur_ts link_delay h tr q u cfg',
     let (option_ts, _) := read ptr_last_sync (mkConfig h tr q) in 
     option_ts <> None ->
@@ -444,8 +500,8 @@ Lemma send_out_sync_cnt_inc_one :
                   (mkConfig h tr q) = (u, cfg') ->
     length (get_queue cfg') >= length q + 1.
 Proof.
-Admitted.
-
+Admitted. *)
+(* 
 Lemma send_out_sync_gap :
   forall ptr_last_sync cur_ts link_delay h tr q u cfg',
     send_out_sync ptr_last_sync cur_ts link_delay
@@ -463,6 +519,6 @@ Proof.
   - intros. simpl in *. destruct q'. simpl in *. auto. 
     + destruct (rev (t :: q')) eqn:E; simpl in *. auto. 
     destruct t0; destruct e; try trivial.
-Admitted.
+Admitted. *)
 
 
