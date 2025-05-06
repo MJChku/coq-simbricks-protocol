@@ -121,6 +121,13 @@ Inductive Event : Type :=
 | DMA_READ_RESP
 | SYNC.
 
+Scheme Equality for Event.       (* ← generates Event_beq and a lemma *)
+
+Definition eqb_event := Event_beq.     (* bool : Event → Event → bool *)
+
+Lemma eqb_event_spec x y :  (x = y) -> (eqb_event x y) = true /\ (eqb_event x y) = true -> (x = y).
+Proof. auto. Qed.
+
 Definition TimedEvent : Type := (Event * nat).
 
 
@@ -233,6 +240,17 @@ Proof.
   apply insert_ts_sorted_list.
   apply H.
 Qed.
+
+Fixpoint filter_event (tr : list TimedEvent) (e : Event) : list TimedEvent :=
+  match tr with
+  | [] => []
+  | (ev, t) :: tail =>
+      if eqb_event ev e
+      then (ev, t) :: filter_event tail e
+      else filter_event tail e
+  end.
+
+
 
 Definition demo : State unit :=
   ret tt.
