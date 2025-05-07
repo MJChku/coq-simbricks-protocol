@@ -100,6 +100,11 @@ Module MakeDSL (M : DSL_SIG).
 
   Definition pass : State unit := fun cfg => (tt, cfg).
 
+  Definition option_default {A} (d : A) (o : option A) : A :=
+  match o with
+  | Some x => x
+  | None  => d
+  end.
 End MakeDSL.
 
 (* --------------------------------------------------- *)
@@ -299,7 +304,7 @@ Definition process_event (t : TimedEvent) (my_ts delay : nat) : State unit :=
   match t with
   | (MMIO_READ_REQ , _) => enq_event_ord (MMIO_READ_RESP, my_ts + delay)
   | (DMA_READ_REQ , _)  => enq_event_ord (DMA_READ_RESP, my_ts + delay)
-  | (SYNC, _)           => enq_event_ord (DMA_READ_RESP, my_ts )      
+  | (SYNC, _)           => enq_event_ord (SYNC, my_ts )      
   | (_, _) => ret tt            
   end.
 
@@ -319,77 +324,34 @@ Compute (let '(_, cfg') := test_event_queue start_cfg in
 Require Import Program.Wf.
 Require Import Lia.
 
-(* removed the following, because too hard to prove anything about it*)
-(* 
-Program Fixpoint send_sync_event
-        (last_ts gap link_delay : nat)
-        (should_enq_log : bool)
-        { measure (gap) } : State nat :=
-  match link_delay with
-  | 0 => ret last_ts
-  | _ =>
-    match gap, should_enq_log with 
-    | 0, false => ret (last_ts - link_delay)
-    | 0, true => enq_event_ord (SYNC, last_ts) ;; ret last_ts
-    | _, true => enq_event_ord (SYNC, last_ts) ;;
-              send_sync_event (last_ts + link_delay) (gap-link_delay) link_delay (Nat.leb link_delay gap)
-    | _, false => send_sync_event (last_ts + link_delay) (gap-link_delay) link_delay (Nat.leb link_delay gap) 
-    end
-  end.
-Next Obligation. lia. Qed.
-Next Obligation. lia. Qed. 
-
-Definition send_out_sync (ptr_last_sync my_ts link_delay : nat) : State unit :=
-  cur_last_sync_opt <- read ptr_last_sync ;;
-  let cur_last_sync := match cur_last_sync_opt with Some n => n | None => 0 end in
-  loged_ts <- send_sync_event cur_last_sync (my_ts - cur_last_sync) link_delay false ;;
-  let next_sync_ts := if Nat.leb loged_ts cur_last_sync then cur_last_sync else loged_ts in 
-  write ptr_last_sync next_sync_ts ;; 
-  ret tt. *)
-
-(* Lemma send_sync_event_increases_trace :
-  forall ptr_last_sync my_ts link_delay last_value_opt cfg res cfg',
-    (* reading the last‐sync pointer *)
-    read ptr_last_sync cfg = (last_value_opt, cfg) ->
-    let cur_last_sync := match last_value_opt with Some n => n | None => 0 end in
-    (* the condition to log at least one SYNC *)
-    Nat.eqb (cur_last_sync+link_delay) my_ts = true ->
-    (* run send_sync_event with should_log = true *)
-    send_sync_event cur_last_sync
-                    (my_ts - cur_last_sync)
-                    link_delay
-                    false
-                    cfg
-    = (res, cfg') ->
-    (* the trace in cfg' is strictly longer than the trace in cfg *)
-    length (get_queue cfg) < length (get_queue cfg').
-Proof. *)
-  (* intros. 
-  destruct cfg as [h [tr q]]. 
-  destruct cfg' as [h' [tr' q']]. 
-  destruct last_value_opt; simpl in *. 
-  - clear H. subst. unfold cur_last_sync in *.
-    apply Nat.eqb_eq in H0. subst. 
-    replace (v + link_delay - v) with link_delay in *.
-    unfold send_sync_event in H1. simpl in H1. *)
-(* Admitted. *)
-
-Fixpoint commit_q (q : EventQueue) (my_ts : nat) (h : Heap) (tr : Trace) : (unit * Config) :=
+Fixpoint commit_q (q : EventQueue) (my_ts : nat) (tr : Trace) : Trace*EventQueue :=
   match q with
-  | [] => (tt, (h, (tr, [])))
+  | [] => (tr, [])
   | (ev, ts) :: qs =>
     if Nat.leb ts my_ts then
       let tr' := tr ++ [(ev, ts)] in
-      commit_q qs my_ts h tr'
+      commit_q qs my_ts tr'
     else
-      (tt, (h, (tr, (ev, ts) :: qs)))
+      (tr, (ev, ts) :: qs)
   end.
 
 Definition commit_events (my_ts : nat) : State unit :=
   fun '(h,(tr,q)) =>
-    commit_q q my_ts h tr.
+    (tt, (h, commit_q q my_ts tr)).
 
-(** Recursive consumer ******************************************************)
+Fixpoint commit_all_q (q : EventQueue) (tr : Trace) :  Trace*EventQueue :=
+  match q with
+  | [] => (tr, [])
+  | (ev, ts) :: qs =>
+      let tr' := tr ++ [(ev, ts)] in
+      commit_all_q qs tr'
+  end.
+
+Definition commit_all_events : State unit :=
+  fun '(h, (tr,q)) =>
+    (tt, (h, commit_all_q q tr)).
+
+(** Recursive consumer *)
 Fixpoint consume_loop
         (ts   : list TimedEvent)
         (ptr  : nat)               (* pointer where we keep current time *)
@@ -401,7 +363,8 @@ Fixpoint consume_loop
   | []        => ret tt
   | (ev, ts_now) :: ts'  =>
           cur_opt <- read ptr ;;
-          let cur_ts := match cur_opt with Some n => n | None => 0 end in
+          let cur_ts := option_default 0 cur_opt in 
+          (* match cur_opt with Some n => n | None => 0 end in *)
 
           (* let cur_ts := if Nat.ltb cur_ts ts_now then ts_now else cur_ts in *)
           let cur_ts := ts_now in
@@ -426,7 +389,8 @@ Definition consume_events
   p2 <- new 0;;
   write p start_ts ;;
   write p2 start_ts ;;
-  consume_loop ts p p2 delay link_delay.
+  consume_loop ts p p2 delay link_delay;;
+  commit_all_events.
 
 (*--------------------------------------------------------------------*)
 (** A trace is “link-bounded” if successive timestamps differ ≤ k ****)
@@ -507,36 +471,4 @@ Lemma consume_events_bounded_trace :
     bounded_trace (get_trace cfg') link_delay.
 Proof.
 Admitted.
-
-(* Lemma send_out_sync_cnt_inc_one : 
-  forall ptr_last_sync cur_ts link_delay h tr q u cfg',
-    let (option_ts, _) := read ptr_last_sync (mkConfig h tr q) in 
-    option_ts <> None ->
-    let ts := match option_ts with Some n => n | None => 0 end in
-    ts + link_delay <= cur_ts ->
-    send_out_sync ptr_last_sync cur_ts link_delay
-                  (mkConfig h tr q) = (u, cfg') ->
-    length (get_queue cfg') >= length q + 1.
-Proof.
-Admitted. *)
-(* 
-Lemma send_out_sync_gap :
-  forall ptr_last_sync cur_ts link_delay h tr q u cfg',
-    send_out_sync ptr_last_sync cur_ts link_delay
-                  (mkConfig h tr q) = (u, cfg') ->
-    let q' := get_queue cfg' in
-    match rev q', rev q with
-    | (SYNC,t')::_, (SYNC,t)::_ => t' - t <= link_delay
-    | _, _ => True
-    end.
-Proof.
-  induction q. 
-  - intros. simpl in *. destruct q'. simpl in *. auto. 
-    + destruct (rev (t :: q')) eqn:E; simpl in *. auto. 
-    destruct t0; destruct e; try trivial.
-  - intros. simpl in *. destruct q'. simpl in *. auto. 
-    + destruct (rev (t :: q')) eqn:E; simpl in *. auto. 
-    destruct t0; destruct e; try trivial.
-Admitted. *)
-
 
