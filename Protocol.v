@@ -38,7 +38,7 @@ induction ts as [|t ts IH]; intros [h [tr q]] res [h' [tr' q']] Hrun.
     specialize (IH (h, (tr ++ [t], q)) res2 (h2, (tr2, q2)) E). simpl in IH.
     subst.
     unfold get_trace in *. simpl in *.
-    rewrite app_length in IH. simpl in IH. simpl in *. rewrite IH. rewrite <- Nat.add_assoc. reflexivity.
+    rewrite length_app in IH. simpl in IH. simpl in *. rewrite IH. rewrite <- Nat.add_assoc. reflexivity.
 Qed.
 
 Definition process_event (t : TimedEvent) (my_ts delay : nat) : State unit :=
@@ -74,6 +74,61 @@ Fixpoint commit_q (q : EQ) (my_ts : nat) (tr : Trace) : Trace*EQ :=
     else
       (tr, (ev, ts) :: qs)
   end.
+
+Fixpoint committed_to_time (q : list TimedEvent) (ts : nat) : Prop :=
+  match q with
+  | [] => True
+  | ((_, _), t) :: q' => t > ts /\ committed_to_time q' ts
+  end.
+
+Lemma committed_check_first :
+  forall n ev ts' q ts,
+    sorted_ts ((n, ev, ts') :: q) ->
+    ts' > ts ->
+    committed_to_time q ts.
+Proof.
+  intros.
+  induction q.
+  - firstorder.
+  - simpl. destruct a as [ [ n' ev' ] ts'' ]. split.
+    + destruct H. eapply Nat.lt_le_trans.
+      apply H0. apply H.
+    + apply IHq.
+      simpl. simpl in H.
+      destruct q.
+      * firstorder.
+      * destruct p as [ [ n'' ev'' ] ts''' ]. split.
+        eapply Nat.le_trans; apply H.
+        apply H.
+Qed.            
+                           
+Lemma commit_q_committed :
+  forall q ts tr tr' q',
+    commit_q q ts tr = (tr', q') ->
+    sorted_ts q ->
+    committed_to_time q' ts.
+Proof.
+  intros. generalize dependent tr.
+  induction q; intros.
+  - simpl in H. inversion H. firstorder.
+  - simpl in H. destruct a as [ev ts'].
+    remember (ts' <=? ts) as eq. destruct eq.
+    + apply IHq in H.
+      assumption.
+      {
+        simpl in H0. destruct q.
+        - firstorder.
+        - destruct t. destruct H0. assumption. 
+      }
+    + inversion H. simpl.
+      apply eq_sym in Heqeq.
+      rewrite Compare_dec.leb_iff_conv in Heqeq.
+      destruct ev. split.
+      * apply Heqeq.
+      * eapply committed_check_first.
+        apply H0.
+        apply Heqeq.
+Qed.
 
 Definition commit_events (my_ts : nat) : State unit :=
   fun '(h,(tr,q)) =>
@@ -164,7 +219,8 @@ Compute let sync_trace:= filter (fun x => let evnt := get_evt x in match evnt wi
 Lemma consume_loop_bounded :
   forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p',
     consume_loop ts ptr ptr_last_sync delay link_delay (h, (tr, p)) 
-      = (res, (h', (tr', p'))) ->
+    = (res, (h', (tr', p'))) ->
+    bounded_trace tr link_delay ->
     bounded_trace tr' link_delay.
 Proof.
 Admitted.
@@ -172,7 +228,8 @@ Admitted.
 Lemma consume_events_bounded_trace :
   forall ts start_ts delay link_delay cfg res cfg',
     consume_events ts start_ts delay link_delay cfg = (res, cfg') ->
+    bounded_trace (get_trace cfg) link_delay ->
     bounded_trace (get_trace cfg') link_delay.
 Proof.
 Admitted.
-
+    

@@ -96,4 +96,36 @@ Module MakeDSL (M : DSL_SIG).
   | None  => d
   end.
 
+  Lemma read_unchanged :
+    forall p h h' tr tr' q q' r,
+      read p (h, (tr, q)) = (r, (h', (tr', q'))) -> h = h' /\ tr = tr' /\ q = q'.
+  Proof.
+    intros.
+    unfold read in H.
+    inversion H.
+    firstorder.
+  Qed.
+
+  Lemma write_unchanged_queue :
+    forall p v h h' tr tr' q q' r,
+      write p v (h, (tr, q)) = (r, (h', (tr', q'))) -> tr = tr' /\ q = q'.
+  Proof.
+    intros.
+    unfold write in H.
+    inversion H.
+    firstorder.
+  Qed.
+
+  Lemma read_write :
+    forall p v h h' tr tr' q q' r,
+      bind (write p v) (fun _ => read p) (h, (tr, q)) = (r, (h', (tr', q'))) -> r = Some v.
+  Proof.
+    intros.
+    unfold bind in H.
+    simpl in H.
+    rewrite Nat.eqb_refl in H.
+    inversion H.
+    reflexivity.
+  Qed.
+
 End MakeDSL.
