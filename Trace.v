@@ -6,8 +6,7 @@ Require Import STR.EventDSL.
 
 Import DSL Events.
 
-(*--------------------------------------------------------------------*)
-(** A trace is “link-bounded” if successive timestamps differ ≤ k ****)
+(* A trace is bounded if successive timestamps differ ≤ k *)
 Definition gap_ok (k : nat) (t1 t2 : TimedEvent) : Prop :=
   let '(_, ts1) := t1 in
   let '(_, ts2) := t2 in

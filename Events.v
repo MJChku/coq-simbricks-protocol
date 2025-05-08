@@ -10,7 +10,7 @@ Inductive Event :=
 Scheme Equality for Event.
 Definition eqb_event := Event_beq.
 
-(* -------- triple: (unique-id, event, timestamp) ------------------------- *)
+(* ((unique-id, event), timestamp) *)
 Definition TimedEvent : Type := ((nat * Event) * nat)%type.
 
 (* projections *)
@@ -23,6 +23,7 @@ Definition get_evt (te : TimedEvent) : Event :=
 Definition get_ts  (te : TimedEvent) : nat :=
   let '(_, t) := te in t.
 
+(* nice constructor *)
 Definition mkEvent (i : nat) (e : Event) (t : nat) : TimedEvent :=
   ((i, e), t).
 

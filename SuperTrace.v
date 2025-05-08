@@ -1,4 +1,4 @@
-(*** SuperTrace : unordered events with (id, deps, duration) ***************)
+(* SuperTrace : unordered events with (id, deps, duration) *)
 From Coq Require Import Lists.List Arith.PeanoNat Lia.
 Import ListNotations.
 Open Scope nat_scope.
@@ -42,6 +42,8 @@ Set Implicit Arguments.
 Definition dep_edge (tr : STrace) (x y : SuperEvent) : Prop :=
   In x tr /\ In y tr /\ In (se_id y) (se_deps x).
 
+
+(* note SuperEventOrder is not transitive *)
 Inductive SuperEventOrder (tr : STrace)
         : SuperEvent -> SuperEvent -> Prop :=
 | SStep  : forall x y,

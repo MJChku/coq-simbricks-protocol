@@ -1,4 +1,4 @@
-(*** CoreDSL : a parametric heap/trace/event-queue DSL *********************)
+(* CoreDSL : a parametric heap/trace/event-queue DSL with shallow embedding *)
 From Coq Require Import Init.Nat Lists.List Arith.PeanoNat.
 From ExtLib.Structures Require Import Monads.
 Export MonadNotation.
@@ -6,18 +6,16 @@ Open Scope monad_scope.
 Import ListNotations.
 
 Module Type DSL_SIG.
-  Parameter V  : Type.      (* heap payloads                  *)
+  Parameter V  : Type.      (* heap data                      *)
   Parameter TE : Type.      (* trace / event-queue entry      *)
 End DSL_SIG.
 
 Module MakeDSL (M : DSL_SIG).
   Import M.
 
-  (*------------------------------------------------------------------*)
-  (** 1. Data *********************************************************)
   Definition Heap   := list (nat * V).
   Definition Trace  := list TE.
-  Definition EQ     := list TE.               (* event queue            *)
+  Definition EQ     := list TE.       
   Definition Config := (Heap * (Trace * EQ))%type.
 
   Definition get_heap  (c:Config) : Heap := fst c.
@@ -37,7 +35,6 @@ Module MakeDSL (M : DSL_SIG).
     bind := @bind
   }.
 
-  (* --- 2.3  Heap operations ------------------------ *)
   Definition heap_empty : Heap := [].
 
   Definition removeb (p : nat) (h : Heap) : Heap :=
@@ -59,7 +56,6 @@ Module MakeDSL (M : DSL_SIG).
   Definition max_ptr (h : Heap) : nat :=
     fold_left (fun m '(p,_) => Nat.max m p) h 0.
 
-  (* --- 2.4  Primitive actions ---------------------- *)
   Definition new (init : V) : State nat :=
     fun '(h,(tr,q)) =>
       let p := S (max_ptr h) in
@@ -95,6 +91,8 @@ Module MakeDSL (M : DSL_SIG).
   | Some x => x
   | None  => d
   end.
+
+  (* ------ Some Primitive lemmas about the operations --------- *)
 
   Lemma read_unchanged :
     forall p h h' tr tr' q q' r,

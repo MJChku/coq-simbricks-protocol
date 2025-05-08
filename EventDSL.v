@@ -36,7 +36,6 @@ Fixpoint sorted_ts (q: list TimedEvent) : Prop :=
   | (_,t1) :: ((_,t2) :: tl) as tail => t1 <= t2 /\ sorted_ts tail
   end.
 
-
 Lemma insert_ts_length :
   forall e q, length (insert_ts e q) = S (length q).
 Proof.
@@ -118,17 +117,17 @@ Qed.
 
 (* demo program: record four events then commit them *)
 Definition demo : State unit :=
-  _ <- enq_event_ord ((1, SYNC),    1) ;;
-  _ <- enq_event_ord ((2, MMIO_READ_REQ), 1) ;;
-  _ <- enq_event_ord ((3, MMIO_READ_RESP),2) ;;
-  _ <- enq_event_ord ((4, SYNC),    3) ;;
+  enq_event_ord ((1, SYNC),    1) ;;
+  enq_event_ord ((2, MMIO_READ_REQ), 10) ;;
+  enq_event_ord ((3, MMIO_READ_RESP),20) ;;
+  enq_event_ord ((4, SYNC),    3) ;;
   ret tt.
 
 Definition empty_cfg : Config := mkConfig heap_empty [] [].
 
 Compute (let '(_, cfg') := demo empty_cfg in (get_heap cfg', get_eq cfg')).
 
-(* property: enqueue keeps queue sorted *)
+(* enqueue keeps queue sorted *)
 Lemma demo_sorted :
   let '(_, cfg') := demo empty_cfg in
   sorted_ts (get_eq cfg').

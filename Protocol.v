@@ -6,26 +6,26 @@ Open Scope nat_scope.
 Require Import STR.EventDSL STR.Trace.
 
 Import DSL Events.
-(* --------------------------------------------------- *)
-(** 6. A looping program that consumes an external list and logs it *)
+
+(* A simple looping program that consumes an external list and logs it *)
 Fixpoint consume (ts : list TimedEvent) : State unit :=
   match ts with
   | [] => ret tt
   | t :: ts' =>
-      enq_log t ;;            (* record t in our trace B *)
+      enq_log t ;; (* record t in our trace *)
       consume ts'
   end.
 
-(** 6. Trace-length property *)
+
+(* Simple length property *)
 Lemma consume_extends_trace :
   forall ts cfg res cfg',
     consume ts cfg = (res, cfg') ->
     length (get_trace cfg') = length (get_trace cfg) + length ts.
 Proof.
 induction ts as [|t ts IH]; intros [h [tr q]] res [h' [tr' q']] Hrun.
-  - (* ts = [] *) simpl in Hrun. inversion Hrun. firstorder.
-  - (* ts = t :: ts *)
-    simpl in Hrun. unfold enq_log in Hrun. unfold bind in Hrun.
+  - simpl in Hrun. inversion Hrun. firstorder.
+  - simpl in Hrun. unfold enq_log in Hrun. unfold bind in Hrun.
     remember (consume ts (h, (tr ++ [t], q))) as R eqn:E.
     destruct R as [res2 [h2 [tr2 q2]]]. inversion Hrun; subst; clear Hrun.
     symmetry in E. 
@@ -41,6 +41,7 @@ induction ts as [|t ts IH]; intros [h [tr q]] res [h' [tr' q']] Hrun.
     rewrite length_app in IH. simpl in IH. simpl in *. rewrite IH. rewrite <- Nat.add_assoc. reflexivity.
 Qed.
 
+(* what event to generate for each type of event? req corresponds to resp *)
 Definition process_event (t : TimedEvent) (my_ts delay : nat) : State unit :=
   let id  := get_id  t in
   let ev  := get_evt  t in
@@ -64,6 +65,8 @@ Definition test_event_queue : State unit :=
 Compute let '(_, cfg') := test_event_queue start_cfg in
          (get_heap cfg', get_eq cfg', get_trace cfg').
 
+
+(* commit events in the event queue upto the my_ts timestamp *)
 Fixpoint commit_q (q : EQ) (my_ts : nat) (tr : Trace) : Trace*EQ :=
   match q with
   | [] => (tr, [])
@@ -75,6 +78,8 @@ Fixpoint commit_q (q : EQ) (my_ts : nat) (tr : Trace) : Trace*EQ :=
       (tr, (ev, ts) :: qs)
   end.
 
+
+(* no events befind ts in the event queue *)
 Fixpoint committed_to_time (q : list TimedEvent) (ts : nat) : Prop :=
   match q with
   | [] => True
@@ -130,10 +135,14 @@ Proof.
         apply Heqeq.
 Qed.
 
+
+
+(* commit events to log upto a my_ts timestamp *)
 Definition commit_events (my_ts : nat) : State unit :=
   fun '(h,(tr,q)) =>
     (tt, (h, commit_q q my_ts tr)).
 
+(* commit all events to log regardless of the timestamp*)
 Fixpoint commit_all_q (q : EQ) (tr : Trace) :  Trace*EQ :=
   match q with
   | [] => (tr, [])
@@ -150,7 +159,7 @@ Definition commit_all_events : State unit :=
 Fixpoint consume_loop
         (ts   : list TimedEvent)
         (ptr  : nat)               (* pointer where we keep current time *)
-        (ptr_last_sync  : nat)               (* pointer where we keep last synced time *)
+        (ptr_last_sync  : nat)     (* pointer where we keep last synced time *)
         (dly  : nat)
         (link_delay : nat)
         : State unit :=
@@ -159,7 +168,6 @@ Fixpoint consume_loop
   | (ev, ts_now) :: ts'  =>
           cur_opt <- read ptr ;;
           let cur_ts := option_default 0 cur_opt in 
-          (* match cur_opt with Some n => n | None => 0 end in *)
 
           (* let cur_ts := if Nat.ltb cur_ts ts_now then ts_now else cur_ts in *)
           let cur_ts := ts_now in
@@ -174,6 +182,7 @@ Fixpoint consume_loop
           consume_loop ts' ptr ptr_last_sync dly link_delay
   end.
 
+(* real protocol code *)
 Definition consume_events
         (ts       : list TimedEvent)
         (start_ts : nat)
