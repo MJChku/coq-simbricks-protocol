@@ -1,4 +1,5 @@
 (* EventDSL : instantiate CoreDSL with TimedEvent *)
+
 From Coq Require Import Lists.List Arith.PeanoNat Lia Program.Wf.
 Import ListNotations.
 From ExtLib.Structures Require Import Monads.
@@ -35,6 +36,31 @@ Fixpoint sorted_ts (q: list TimedEvent) : Prop :=
   | [] | [_] => True
   | (_,t1) :: ((_,t2) :: tl) as tail => t1 <= t2 /\ sorted_ts tail
   end.
+
+Lemma sorted_ts_in_order :
+  forall q ev ts ev' ts',
+    sorted_ts ((ev, ts) :: q) ->
+    In (ev', ts') ((ev, ts) :: q) ->
+    ts <= ts'.
+Proof.
+  intros.
+  induction q.
+  - destruct H0.
+    + inversion H0. subst.
+      apply Nat.le_refl.
+    + inversion H0.
+  - destruct a as [ ev'' ts'' ].
+    destruct H0; [ | destruct H0 ].
+    + inversion H0. subst. apply Nat.le_refl.
+    + inversion H0. subst. apply H.
+    + apply IHq. destruct q.
+      * firstorder.
+      * destruct p as [ evp tsp ].
+        split.
+        -- eapply Nat.le_trans; apply H.
+        -- apply H.
+      * simpl. right. assumption.
+Qed.       
 
 Lemma insert_ts_length :
   forall e q, length (insert_ts e q) = S (length q).

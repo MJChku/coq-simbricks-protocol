@@ -52,7 +52,30 @@ Definition process_event (t : TimedEvent) (my_ts delay : nat) : State unit :=
   | _              => ret tt
   end.
 
+Lemma process_event_unchanged_trace :
+  forall t my_ts delay h tr q res h' tr' q',
+    process_event t my_ts delay (h, (tr, q)) = (res, (h', (tr', q'))) ->
+    tr = tr'.
+Proof.
+  intros.
+  unfold process_event in H.
+  unfold enq_event_ord in H.
+  destruct (get_evt t); inversion H; subst; reflexivity.
+Qed.
 
+Lemma process_event_queue_remains_sorted :
+  forall t my_ts delay h tr q res h' tr' q',
+    process_event t my_ts delay (h, (tr, q)) = (res, (h', (tr', q'))) ->
+    sorted_ts q ->
+    sorted_ts q'.
+Proof.
+  intros.
+  unfold process_event in H.
+  unfold enq_event_ord in H.
+  destruct (get_evt t); inversion H; subst.
+  all: try apply insert_ts_sorted_list; assumption.
+Qed.  
+  
 Definition start_cfg : Config := mkConfig heap_empty [] [].
 
 Definition test_event_queue : State unit :=
@@ -107,7 +130,7 @@ Proof.
         apply H.
 Qed.            
                            
-Lemma commit_q_committed :
+Lemma commit_q_no_more_to_commit :
   forall q ts tr tr' q',
     commit_q q ts tr = (tr', q') ->
     sorted_ts q ->
@@ -135,7 +158,87 @@ Proof.
         apply Heqeq.
 Qed.
 
+Lemma commit_q_trace_remains :
+  forall q ts tr tr' q' x,
+    commit_q q ts tr = (tr', q') ->
+    In x tr -> In x tr'.
+Proof.
+  intros.
+  generalize dependent tr.
+  induction q; intros.
+  - inversion H. subst. assumption.
+  - simpl in H.
+    destruct a as [ ev ts_ev ].
+    destruct (ts_ev <=? ts).
+    + eapply IHq.
+      * apply H.
+      * eapply incl_appl in H0.
+        apply H0.
+        apply incl_refl.
+    + inversion H. subst. assumption.
+Qed.
 
+Lemma commit_q_committed :
+  forall q ts tr tr' q' ev ts_ev,
+    commit_q q ts tr = (tr', q') ->
+    In (ev, ts_ev) q ->
+    sorted_ts q ->
+    ts_ev <= ts ->
+    In (ev, ts_ev) tr'.
+Proof.
+  intros. generalize dependent tr.
+  induction q; intros.
+  - inversion H0.
+  - destruct a as [ ev' ts_ev' ].
+    apply in_inv in H0. destruct H0.
+    + simpl in H. inversion H0. subst.
+      rewrite <- Nat.leb_le in H2.
+      rewrite H2 in H.
+      eapply commit_q_trace_remains.
+      * apply H.
+      * apply in_or_app. right. simpl. left. reflexivity.
+    + eapply IHq.
+      * assumption.
+      * simpl in H1.
+        destruct q.
+        -- firstorder.
+        -- destruct t. apply H1.
+      * eapply sorted_ts_in_order in H1.
+        2: {
+          simpl.
+          right.
+          apply H0.
+        }
+        simpl in H.
+        eapply Nat.le_trans with (p := ts) in H1.
+        2: apply H2.
+        rewrite <- Nat.leb_le in H1.
+        rewrite H1 in H.
+        apply H.
+Qed.
+
+Lemma commit_q_sorted :
+  forall q ts tr tr' q',
+    commit_q q ts tr = (tr', q') ->
+    sorted_ts q ->
+    sorted_ts q'.
+Proof.
+  intros. generalize dependent tr.
+  induction q; intros.
+  - inversion H. firstorder.
+  - destruct a as [ ev ts_ev ].
+    simpl in H.
+    destruct (ts_ev <=? ts).
+    + eapply IHq.
+      destruct q.
+      * firstorder.
+      * simpl in H0. simpl.
+        destruct t as [ ev' ts_ev' ].
+        apply H0.
+      * apply H.
+    + inversion H.
+      apply H0.
+Qed.        
 
 (* commit events to log upto a my_ts timestamp *)
 Definition commit_events (my_ts : nat) : State unit :=
@@ -159,25 +262,20 @@ Definition commit_all_events : State unit :=
 Fixpoint consume_loop
         (ts   : list TimedEvent)
         (ptr  : nat)               (* pointer where we keep current time *)
-        (ptr_last_sync  : nat)     (* pointer where we keep last synced time *)
+        (ptr_last_sync  : nat)               (* pointer where we keep last synced time *)
         (dly  : nat)
         (link_delay : nat)
         : State unit :=
   match ts with
   | []        => ret tt
-  | (ev, ts_now) :: ts'  =>
-          cur_opt <- read ptr ;;
-          let cur_ts := option_default 0 cur_opt in 
-
-          (* let cur_ts := if Nat.ltb cur_ts ts_now then ts_now else cur_ts in *)
-          let cur_ts := ts_now in
-          write ptr cur_ts ;;
+  | (ev, ts_ev) :: ts'  =>
+          write ptr ts_ev ;;
 
           (* process one incoming event*)
-          process_event (ev, ts_now) cur_ts dly ;;
+          process_event (ev, ts_ev) ts_ev dly ;;
 
            (* commit all events *)
-          commit_events cur_ts ;;
+          commit_events ts_ev ;;
 
           consume_loop ts' ptr ptr_last_sync dly link_delay
   end.
@@ -223,6 +321,172 @@ Compute (let '(_, cfg') := consume_events sample_events 0 1 2 start_cfg in
 Compute let sync_trace:= filter (fun x => let evnt := get_evt x in match evnt with SYNC => true | _ => false end) sample_events in
         let '(_, cfg') := consume_events sync_trace 0 1 2 start_cfg in
         live_trace (get_trace cfg') 2.
+
+Fixpoint all_sync (tr : list TimedEvent) : Prop :=
+  match tr with
+  | [] => True
+  | ((id, ev), ts) :: tr' => ev = SYNC /\ all_sync tr'
+  end.
+
+Lemma in_all_sync :
+  forall tr x,
+    all_sync tr -> In x tr -> get_evt x = SYNC.
+Proof.
+  intros.
+  induction tr.
+  - firstorder.
+  - destruct a as [ [ i ev ] ts ].
+    apply in_inv in H0.
+    destruct H0.
+    + rewrite <- H0.
+      simpl.
+      apply H.
+    + apply IHtr.
+      apply H.
+      apply H0.
+Qed.
+
+Lemma consume_loop_sync_in_trace :
+  forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p' x,
+    consume_loop ts ptr ptr_last_sync delay link_delay (h, (tr, p))
+    = (res, (h', (tr', p'))) ->
+    sorted_ts p ->
+    get_evt x = SYNC ->
+    In x tr \/ In x ts -> In x tr'.
+Proof.
+  intros.
+  generalize dependent p'. generalize dependent tr'. generalize dependent h'.
+  generalize dependent p. generalize dependent tr. generalize dependent h.
+  induction ts; intros.
+  - simpl in H.
+    inversion H. subst.
+    destruct H2.
+    + assumption.
+    + firstorder.
+  - destruct a as [ [ id type ] ts_ev ].
+    simpl in H.
+    unfold bind in H.
+
+    remember (write ptr ts_ev (h, (tr, p))) as ret0.
+    destruct ret0 as [ res0 [ h0 [ tr0 p0 ] ] ].
+    apply eq_sym in Heqret0.
+    apply write_unchanged_queue in Heqret0.
+    destruct Heqret0; subst.
+
+    remember (process_event (id, type, ts_ev) ts_ev delay (h0, (tr0, p0))) as ret1.
+    destruct ret1 as [ res1 [ h1 [ tr1 p1 ] ] ].
+    apply eq_sym in Heqret1.
+    pose proof Heqret1 as Heqret1'.
+    apply process_event_unchanged_trace in Heqret1.
+    subst.
+
+    remember (commit_events ts_ev (h1, (tr1, p1))) as ret2.
+    destruct ret2 as [ res2 [ h2 [ tr2 p2 ] ] ].
+    unfold commit_events in Heqret2.
+    inversion Heqret2.
+    subst.
+
+    destruct H2.
+    + eapply IHts.
+      * left.
+        apply eq_sym in H6.
+        eapply commit_q_trace_remains in H6.
+        apply H6.
+        assumption.
+      * apply process_event_queue_remains_sorted in Heqret1'.
+        2: assumption.
+        eapply commit_q_sorted in Heqret1'.
+        2: apply eq_sym in H6; apply H6.
+        apply Heqret1'.
+      * apply H.
+    + eapply IHts.
+      * destruct H2.
+        -- left.
+           rewrite <- e in H1. simpl in H1. subst.
+           unfold process_event in Heqret1'.
+           simpl in Heqret1'.
+           inversion Heqret1'.
+           specialize insert_ts_in with (id, SYNC, ts_ev) p0; intros.
+           rewrite H4 in H1.
+           apply eq_sym in H6.
+           eapply commit_q_committed in H6.
+           ++ apply H6.
+           ++ apply H1.
+           ++ rewrite <- H4.
+              apply insert_ts_sorted_list.
+              assumption.
+           ++ apply Nat.le_refl.
+        -- right. apply i.
+      * apply process_event_queue_remains_sorted in Heqret1'.
+        2: assumption.
+        eapply commit_q_sorted in Heqret1'.
+        2: apply eq_sym in H6; apply H6.
+        apply Heqret1'.
+      * apply H.
+Qed.
+
+Lemma consume_loop_trace_remains :
+  forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p' x,
+    consume_loop ts ptr ptr_last_sync delay link_delay (h, (tr, p))
+    = (res, (h', (tr', p'))) -> In x tr -> In x tr'.
+Proof.
+  intros.
+  generalize dependent p'. generalize dependent tr'. generalize dependent h'.
+  generalize dependent p. generalize dependent tr. generalize dependent h.
+  induction ts; intros.
+  - simpl in H.
+    inversion H. subst.
+    assumption.
+  - destruct a as [ [ id type ] ts_ev ].
+    simpl in H.
+    unfold bind in H.
+
+    remember (write ptr ts_ev (h, (tr, p))) as ret0.
+    destruct ret0 as [ res0 [ h0 [ tr0 p0 ] ] ].
+    apply eq_sym in Heqret0.
+    apply write_unchanged_queue in Heqret0.
+    destruct Heqret0; subst.
+
+    remember (process_event (id, type, ts_ev) ts_ev delay (h0, (tr0, p0))) as ret1.
+    destruct ret1 as [ res1 [ h1 [ tr1 p1 ] ] ].
+    apply eq_sym in Heqret1.
+    apply process_event_unchanged_trace in Heqret1.
+    subst.
+
+    remember (commit_events ts_ev (h1, (tr1, p1))) as ret2.
+    destruct ret2 as [ res2 [ h2 [ tr2 p2 ] ] ].
+    unfold commit_events in Heqret2.
+    inversion Heqret2.
+    subst.
+    apply eq_sym in H4.
+    eapply commit_q_trace_remains in H4.
+    2: apply H0.
+    eapply IHts.
+    + apply H4.
+    + apply H.
+Qed.
+
+Lemma consume_loop_all_sync_in_trace :
+  forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p' x,
+    consume_loop ts ptr ptr_last_sync delay link_delay (h, (tr, p))
+    = (res, (h', (tr', p'))) ->
+    sorted_ts p ->
+    all_sync ts ->
+    In x tr \/ In x ts -> In x tr'.
+Proof.
+  intros.
+  destruct H2.
+  - eapply consume_loop_trace_remains.
+    + apply H.
+    + apply H2.
+  - eapply in_all_sync in H1.
+    2: apply H2.
+    eapply consume_loop_sync_in_trace in H.
+    + apply H.
+    + apply H0.
+    + apply H1.
+    + right. apply H2.
+Qed.
 
 (* Check that the trace is not live *)
 Lemma consume_loop_bounded :
