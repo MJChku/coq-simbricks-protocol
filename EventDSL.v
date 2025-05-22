@@ -37,6 +37,7 @@ Fixpoint sorted_ts (q: list TimedEvent) : Prop :=
   | (_,t1) :: ((_,t2) :: tl) as tail => t1 <= t2 /\ sorted_ts tail
   end.
 
+(* anything in a sorted list has an equal or higher timestamp of the first element *)
 Lemma sorted_ts_in_order :
   forall q ev ts ev' ts',
     sorted_ts ((ev, ts) :: q) ->
