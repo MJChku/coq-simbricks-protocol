@@ -52,6 +52,7 @@ Definition process_event (t : TimedEvent) (my_ts delay : nat) : State unit :=
   | _              => ret tt
   end.
 
+(* process_event does not change trace *)
 Lemma process_event_unchanged_trace :
   forall t my_ts delay h tr q res h' tr' q',
     process_event t my_ts delay (h, (tr, q)) = (res, (h', (tr', q'))) ->
@@ -63,6 +64,7 @@ Proof.
   destruct (get_evt t); inversion H; subst; reflexivity.
 Qed.
 
+(* process_event preserves sorted property of EventQueue *)
 Lemma process_event_queue_remains_sorted :
   forall t my_ts delay h tr q res h' tr' q',
     process_event t my_ts delay (h, (tr, q)) = (res, (h', (tr', q'))) ->
@@ -129,7 +131,8 @@ Proof.
         eapply Nat.le_trans; apply H.
         apply H.
 Qed.            
-                           
+
+(* commit_q guarantees there is nothing left in the EventQueue to commit to the timestamp *)
 Lemma commit_q_no_more_to_commit :
   forall q ts tr tr' q',
     commit_q q ts tr = (tr', q') ->
@@ -158,6 +161,7 @@ Proof.
         apply Heqeq.
 Qed.
 
+(* Events in the trace remain there after commit_q *)
 Lemma commit_q_trace_remains :
   forall q ts tr tr' q' x,
     commit_q q ts tr = (tr', q') ->
@@ -178,6 +182,7 @@ Proof.
     + inversion H. subst. assumption.
 Qed.
 
+(* commit_q guarantees that every event to be committed appears in the trace *)
 Lemma commit_q_committed :
   forall q ts tr tr' q' ev ts_ev,
     commit_q q ts tr = (tr', q') ->
@@ -217,6 +222,7 @@ Proof.
         apply H.
 Qed.
 
+(* commit_q preserves sorted property of the EventQueue *)
 Lemma commit_q_sorted :
   forall q ts tr tr' q',
     commit_q q ts tr = (tr', q') ->
@@ -328,6 +334,7 @@ Fixpoint all_sync (tr : list TimedEvent) : Prop :=
   | ((id, ev), ts) :: tr' => ev = SYNC /\ all_sync tr'
   end.
 
+(* all_sync means any event inside is a SYNC *)
 Lemma in_all_sync :
   forall tr x,
     all_sync tr -> In x tr -> get_evt x = SYNC.
@@ -346,6 +353,57 @@ Proof.
       apply H0.
 Qed.
 
+(* A tactic to find which heaps and queues are equal after running certain commands *)
+Ltac find_equivalences :=
+  repeat match goal with
+    | [ H: (let (_, cfg) := write ?ptr ?ts_ev (?h, (?tr, ?p)) in _) = _ |- _ ] =>
+        remember (write ptr ts_ev (h, (tr, p))) as retw eqn: Heqretw;
+        destruct retw as [ resw [ hw [ trw pw ] ] ];
+        apply eq_sym in Heqretw;
+        pose proof Heqretw as Heqretw';
+        apply write_unchanged_queue in Heqretw';
+        destruct Heqretw'; subst
+    | [ H: (let (_, cfg) := process_event (?id, ?type, ?ts_ev) ?ts_ev ?delay (?h, (?tr, ?p)) in _ ) = _ |- _ ] =>
+        remember (process_event (id, type, ts_ev) ts_ev delay (h, (tr, p))) as retpe eqn: Heqretpe;
+        destruct retpe as [ respe [ hpe [ trpe ppe ] ] ];
+        apply eq_sym in Heqretpe;
+        pose proof Heqretpe as Heqretpe';
+        apply process_event_unchanged_trace in Heqretpe'; subst
+    | [ H: (let (_, cfg) := commit_events ?ts_ev (?h, (?tr, ?p)) in _) = _ |- _ ] =>
+        remember (commit_events ts_ev (h, (tr, p))) as retce eqn: Heqretce;
+        destruct retce as [ resce [ hce [ trce pce ] ] ];
+        unfold commit_events in Heqretce;
+        inversion Heqretce; subst
+    end.
+
+(* If an event was in the original trace, it will remain in the final trace *)
+Lemma consume_loop_trace_remains :
+  forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p' x,
+    consume_loop ts ptr ptr_last_sync delay link_delay (h, (tr, p))
+    = (res, (h', (tr', p'))) -> In x tr -> In x tr'.
+Proof.
+  intros.
+  generalize dependent p'. generalize dependent tr'. generalize dependent h'.
+  generalize dependent p. generalize dependent tr. generalize dependent h.
+  induction ts; intros.
+  - simpl in H.
+    inversion H. subst.
+    assumption.
+  - destruct a as [ [ id type ] ts_ev ].
+    simpl in H.
+    unfold bind in H.
+
+    find_equivalences.
+
+    apply eq_sym in H4.
+    eapply commit_q_trace_remains in H4.
+    2: apply H0.
+    eapply IHts.
+    + apply H4.
+    + apply H.
+Qed.
+
+(* If a SYNC event was in either traces, it will appear in the final trace *)
 Lemma consume_loop_sync_in_trace :
   forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p' x,
     consume_loop ts ptr ptr_last_sync delay link_delay (h, (tr, p))
@@ -367,46 +425,25 @@ Proof.
     simpl in H.
     unfold bind in H.
 
-    remember (write ptr ts_ev (h, (tr, p))) as ret0.
-    destruct ret0 as [ res0 [ h0 [ tr0 p0 ] ] ].
-    apply eq_sym in Heqret0.
-    apply write_unchanged_queue in Heqret0.
-    destruct Heqret0; subst.
-
-    remember (process_event (id, type, ts_ev) ts_ev delay (h0, (tr0, p0))) as ret1.
-    destruct ret1 as [ res1 [ h1 [ tr1 p1 ] ] ].
-    apply eq_sym in Heqret1.
-    pose proof Heqret1 as Heqret1'.
-    apply process_event_unchanged_trace in Heqret1.
-    subst.
-
-    remember (commit_events ts_ev (h1, (tr1, p1))) as ret2.
-    destruct ret2 as [ res2 [ h2 [ tr2 p2 ] ] ].
-    unfold commit_events in Heqret2.
-    inversion Heqret2.
-    subst.
+    find_equivalences.
 
     destruct H2.
-    + eapply IHts.
-      * left.
-        apply eq_sym in H6.
-        eapply commit_q_trace_remains in H6.
-        apply H6.
-        assumption.
-      * apply process_event_queue_remains_sorted in Heqret1'.
-        2: assumption.
-        eapply commit_q_sorted in Heqret1'.
-        2: apply eq_sym in H6; apply H6.
-        apply Heqret1'.
+    (* If in original trace, we can use lemma above to show it appears in the final trace *)
+    + eapply consume_loop_trace_remains.
       * apply H.
+      * eapply commit_q_trace_remains.
+        -- apply eq_sym. apply H6.
+        -- apply H2.
+    (* If in other trace, we show that it appears in the final trace *)
     + eapply IHts.
       * destruct H2.
+        (* Event is the first one in the other trace *)
         -- left.
            rewrite <- e in H1. simpl in H1. subst.
-           unfold process_event in Heqret1'.
-           simpl in Heqret1'.
-           inversion Heqret1'.
-           specialize insert_ts_in with (id, SYNC, ts_ev) p0; intros.
+           unfold process_event in Heqretpe.
+           simpl in Heqretpe.
+           inversion Heqretpe.
+           specialize insert_ts_in with (id, SYNC, ts_ev) pw; intros.
            rewrite H4 in H1.
            apply eq_sym in H6.
            eapply commit_q_committed in H6.
@@ -416,54 +453,14 @@ Proof.
               apply insert_ts_sorted_list.
               assumption.
            ++ apply Nat.le_refl.
+        (* Event is in the rest of the other trace *)
         -- right. apply i.
-      * apply process_event_queue_remains_sorted in Heqret1'.
+      * apply process_event_queue_remains_sorted in Heqretpe.
         2: assumption.
-        eapply commit_q_sorted in Heqret1'.
+        eapply commit_q_sorted in Heqretpe.
         2: apply eq_sym in H6; apply H6.
-        apply Heqret1'.
+        apply Heqretpe.
       * apply H.
-Qed.
-
-Lemma consume_loop_trace_remains :
-  forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p' x,
-    consume_loop ts ptr ptr_last_sync delay link_delay (h, (tr, p))
-    = (res, (h', (tr', p'))) -> In x tr -> In x tr'.
-Proof.
-  intros.
-  generalize dependent p'. generalize dependent tr'. generalize dependent h'.
-  generalize dependent p. generalize dependent tr. generalize dependent h.
-  induction ts; intros.
-  - simpl in H.
-    inversion H. subst.
-    assumption.
-  - destruct a as [ [ id type ] ts_ev ].
-    simpl in H.
-    unfold bind in H.
-
-    remember (write ptr ts_ev (h, (tr, p))) as ret0.
-    destruct ret0 as [ res0 [ h0 [ tr0 p0 ] ] ].
-    apply eq_sym in Heqret0.
-    apply write_unchanged_queue in Heqret0.
-    destruct Heqret0; subst.
-
-    remember (process_event (id, type, ts_ev) ts_ev delay (h0, (tr0, p0))) as ret1.
-    destruct ret1 as [ res1 [ h1 [ tr1 p1 ] ] ].
-    apply eq_sym in Heqret1.
-    apply process_event_unchanged_trace in Heqret1.
-    subst.
-
-    remember (commit_events ts_ev (h1, (tr1, p1))) as ret2.
-    destruct ret2 as [ res2 [ h2 [ tr2 p2 ] ] ].
-    unfold commit_events in Heqret2.
-    inversion Heqret2.
-    subst.
-    apply eq_sym in H4.
-    eapply commit_q_trace_remains in H4.
-    2: apply H0.
-    eapply IHts.
-    + apply H4.
-    + apply H.
 Qed.
 
 Lemma consume_loop_all_sync_in_trace :
