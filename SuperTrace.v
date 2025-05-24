@@ -70,3 +70,39 @@ Proof.
   - eauto.
   - eauto.
 Qed.
+
+Definition list_max (l : list nat) : nat :=
+  fold_left Nat.max l 0.
+
+Fixpoint finish_time_fuel
+         (fuel : nat)                (* fuel ≤ length tr  *)
+         (e    : SuperEvent)
+         (tr   : STrace) : nat :=
+  match fuel with
+  | 0 => 0
+  | S fuel' =>
+      match se_deps e with
+      | [] => se_dur e  (* no dependencies, just return duration *)
+      | deps  =>
+        let dep_finish :=
+          map (fun d =>
+                match find_se d tr with
+                | Some de => finish_time_fuel fuel' de tr
+                | None => 0  (* impossible *)
+                end)
+              deps in
+        let max_dep := list_max dep_finish in
+        max_dep + se_dur e
+      end
+  end.
+
+Definition finish_time (e : SuperEvent) (tr : STrace) : nat :=
+  finish_time_fuel (length tr) e tr.
+
+Definition strace_end_ts (tr : STrace) : nat :=
+  list_max (map (fun e => finish_time e tr) tr).
+
+Compute strace_end_ts example_strace.
+
+
+

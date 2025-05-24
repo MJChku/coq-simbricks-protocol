@@ -3,7 +3,7 @@ From Coq Require Import Lists.List Arith.PeanoNat Lia Program.Wf.
 Import ListNotations.
 Open Scope nat_scope.
 
-Require Import STR.EventDSL STR.Trace STR.SuperTraceMerge.
+Require Import STR.EventDSL STR.Trace STR.SuperTrace STR.SuperTraceMerge.
 
 Import DSL Events.
 
@@ -314,6 +314,7 @@ Definition sample_events : list TimedEvent :=
     mkEvent 9 MMIO_READ_REQ 7
   ]. 
 
+
 (* Run consume_events with start_ts = 0, delay = 1, link_delay = 2 *)
 Compute (let '(_, cfg') := consume_events sample_events 0 1 2 start_cfg in
          (get_heap cfg', get_eq cfg', get_trace cfg')).
@@ -328,10 +329,12 @@ Compute let sync_trace:= filter (fun x => let evnt := get_evt x in match evnt wi
         let '(_, cfg') := consume_events sync_trace 0 1 2 start_cfg in
         live_trace (get_trace cfg') 2.
 
+(* Merge into super trace, drops sync messages *)
 Compute let '(_, cfg') := consume_events sample_events 0 19 2 start_cfg in
-          (merge_traces sample_events (get_trace cfg')).
+        let super_trace :=  (merge_traces sample_events (get_trace cfg')) in 
+        strace_end_ts super_trace.
   
-  (* all_sync means all events in the trace are SYNC *)
+(* all_sync means all events in the trace are SYNC *)
 
 Fixpoint all_sync (tr : list TimedEvent) : Prop :=
   match tr with
