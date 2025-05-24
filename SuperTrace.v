@@ -346,6 +346,32 @@ Proof.
   exists x. auto.  
 Qed.
 
+Lemma chain_n_exists_trivial:
+  forall e,
+    In e tr ->
+    exists k, chain_n k e.
+Proof.
+  intros e Hin.
+  exists 0. apply chain0. exact Hin.
+Qed.
+
+
+Lemma chain_n_exists:
+  forall e e',
+    dep_rel tr e e' -> 
+    exists k, k > 0 /\ chain_n k e'.
+Proof.
+  intros e e' Hdep.
+  remember Hdep as Hdep_original.
+  clear HeqHdep_original.
+  destruct Hdep as [Hin_e Hin_e' Hin_dep].
+  apply chain_n_exists_trivial in Hin_e.
+  destruct Hin_e as [k Hchain].
+  exists (S k).
+  split.
+  - lia.
+  - apply chainS with e; auto.  
+Qed.
 
 
 Lemma chain_n_bound :
