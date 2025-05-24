@@ -93,6 +93,34 @@ Proof.
 Qed.
 
 
+Lemma find_se_some_id sid tr ev :
+  find_se sid tr = Some ev -> se_id ev = sid.
+Proof.
+  intros.
+  induction tr.
+  - discriminate.
+  - simpl in H. 
+    destruct (Nat.eqb sid (se_id a)) eqn:Heq.
+    apply Nat.eqb_eq in Heq.
+    inversion H. rewrite Heq. 
+    rewrite H1. reflexivity.      
+    apply IHtr in H. auto. 
+Qed.
+
+Lemma in_length_strace :
+  forall e (tr: list SuperEvent ),
+    In e tr ->
+    length tr > 0.
+Proof.
+  intros e tr Hin.
+  induction tr as [|h t IH].
+  - inversion Hin.
+  - simpl in Hin. destruct Hin as [Heq | Hin'].
+    + subst. simpl. lia.
+    + apply IH in Hin'. simpl. lia.
+Qed. 
+
+
 Lemma fold_left_max_le :
   forall l acc n,
     acc <= n ->
@@ -217,23 +245,6 @@ Proof.
 Qed.
 
 
-(* confirm wellfound doesn't allow reflexivity *)
-Lemma wf_irreflexive :
-  forall {A} (R : A -> A -> Prop),
-    well_founded R ->
-    forall x, not (R x x).
-Proof.
-  intros A R WF x Rx.
-  pose proof (WF x) as Accx.
-  revert Rx.
-  induction Accx as [x Hpred IH].
-  intros Rx. 
-  specialize (Hpred x Rx). 
-  specialize IH with x.
-  auto.
-Qed.
-
-
 Fixpoint rank_fixpoint
          (fuel : nat)
          (e    : SuperEvent)
@@ -256,22 +267,104 @@ Fixpoint rank_fixpoint
       end
   end.
 
+(* acyclic using wellfound *)
+(* confirm wellfound doesn't allow reflexivity *)
+Lemma wf_irreflexive :
+  forall {A} (R : A -> A -> Prop),
+    well_founded R ->
+    forall x, not (R x x).
+Proof.
+  intros A R WF x Rx.
+  pose proof (WF x) as Accx.
+  induction Accx as [x Hpred IH].
+  specialize (Hpred x Rx). 
+  specialize IH with x.
+  auto.
+Qed.
+
+
+Lemma wf_asymmetry :
+  forall {A} (R : A -> A -> Prop),
+    well_founded R ->
+    forall x y, 
+    R x y -> 
+    ~ (R y x).
+Proof.
+  intros A R WF.
+  apply (well_founded_ind WF
+            (fun x => forall y, R x y -> ~ R y x)).
+  intros x IH y Rxy Ryx.
+  firstorder.
+Qed.
+
+(* 
+https://rocq-prover.org/doc/v8.9/stdlib/Coq.Relations.Relation_Operators.html
+Inductive clos_trans (x: A) : A -> Prop :=
+    | t_step (y:A) : R x y -> clos_trans x y
+    | t_trans (y z:A) : clos_trans x y -> clos_trans y z -> clos_trans x z.
+*)
+
+Lemma wf_no_positive_cycle
+      {A} (R : A -> A -> Prop) :
+  well_founded R ->
+  forall x, ~ (clos_trans A R x x).
+Proof.
+   intros WF.
+   apply wf_irreflexive.
+   apply wf_clos_trans.
+   apply WF.
+Qed.
+
+
 Definition dep_rel (tr : STrace) : relation SuperEvent :=
   fun x y => In x tr /\ In y tr /\ In (se_id x) (se_deps y).
 
 Definition acyclic_strace (tr : STrace) : Prop :=
   well_founded (dep_rel tr).
 
-Lemma find_se_some_id sid tr ev :
-  find_se sid tr = Some ev -> se_id ev = sid.
+Section Chain.
+
+Variable tr : STrace.
+Hypothesis Hwf : acyclic_strace tr.
+
+Inductive chain_n : nat -> SuperEvent -> Prop :=
+| chain0 : forall e,
+    In e tr ->
+    chain_n 0 e
+| chainS : forall k x y,
+    chain_n k x ->
+    dep_rel tr x y ->
+    chain_n (S k) y.
+
+Lemma chain_n_inv :
+    forall k e,
+      chain_n (S k) e ->
+      exists x, chain_n k x /\ dep_rel tr x e.
 Proof.
-  intros.
-  induction tr.
-  - discriminate.
-  - simpl in H. 
-    destruct (Nat.eqb sid (se_id a)) eqn:Heq.
-    apply Nat.eqb_eq in Heq.
-    inversion H. rewrite Heq. 
-    rewrite H1. reflexivity.      
-    apply IHtr in H. auto. 
+  intros k e H.
+  inversion H. subst.
+  exists x. auto.  
 Qed.
+
+
+
+Lemma chain_n_bound :
+  forall x k, 
+  chain_n k x -> k < length tr.
+Proof.
+  intros x k.
+  apply (well_founded_induction
+           (A := SuperEvent)
+           (R := dep_rel tr)
+           Hwf
+           (fun x =>
+              chain_n k x -> k < length tr)).
+  intros.
+  induction H0.
+  - apply in_length_strace in H0.
+    lia.
+  - specialize (H x0).
+    apply H in H1. apply H1.
+Admitted.
+
+End Chain.
