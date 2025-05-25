@@ -328,6 +328,13 @@ Compute let sync_trace:= filter (fun x => let evnt := get_evt x in match evnt wi
         let '(_, cfg') := consume_events sync_trace 0 1 2 start_cfg in
         live_trace (get_trace cfg') 2.
 
+Definition sync_filter (tr : list TimedEvent) : list TimedEvent :=
+  filter (fun x =>
+            let evnt := get_evt x in
+            match evnt with
+            | SYNC => true
+            | _ => false end) tr.
+
 Fixpoint all_sync (tr : list TimedEvent) : Prop :=
   match tr with
   | [] => True
@@ -351,6 +358,40 @@ Proof.
     + apply IHtr.
       apply H.
       apply H0.
+Qed.
+
+(* all_sync distributes across concatenation *)
+Lemma all_sync_dist :
+  forall tr tr',
+    all_sync (tr ++ tr') -> all_sync tr /\ all_sync tr'.
+Proof.
+  intros.
+  induction tr.
+  - split.
+    + firstorder.
+    + apply H.
+  - destruct a as [ [ id type ] ts ].
+    simpl in H.
+    split.
+    + simpl.
+      split.
+      * apply H.
+      * apply IHtr. apply H.
+    + apply IHtr. apply H.
+Qed.
+
+(* sync_filter returns an all_sync list *)
+Lemma sync_filter_all_sync :
+  forall tr,
+    all_sync (sync_filter tr).
+Proof.
+  intros.
+  induction tr.
+  - firstorder.
+  - destruct a as [ [ id type ] ts ].
+    destruct type.
+    5: { simpl. split. reflexivity. assumption. }
+    all: simpl; assumption.
 Qed.
 
 (* A tactic to find which heaps and queues are equal after running certain commands *)
@@ -463,6 +504,7 @@ Proof.
       * apply H.
 Qed.
 
+(* Running consume loop means that all SYNC in either trace appears in the final trace *)
 Lemma consume_loop_all_sync_in_trace :
   forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p' x,
     consume_loop ts ptr ptr_last_sync delay link_delay (h, (tr, p))
@@ -484,6 +526,609 @@ Proof.
     + apply H1.
     + right. apply H2.
 Qed.
+
+(* A lemma to prove boundedness by ensuring each element is either the biggest or there is another element that is not too much higher than it *)
+Lemma bounded_trace_in_sorted :
+  forall tr link_delay,
+    sorted_ts tr ->
+    (
+      forall x, In x tr ->
+                (forall y, In y tr -> get_ts x >= get_ts y) \/
+                (exists y, get_ts y > get_ts x /\ In y tr /\ gap_ok link_delay x y)) ->
+    bounded_trace tr link_delay.
+Proof.
+  intros.
+  induction tr.
+  - firstorder.
+  - destruct tr.
+    + firstorder.
+    + destruct a as [ eva tsa ]. destruct t as [ evt tst ].
+      simpl.
+      split.
+      * specialize H0 with (eva, tsa).
+        specialize in_eq with (a := (eva, tsa))(l := (evt, tst) :: tr). intros.
+        apply H0 in H1.
+        destruct H1.
+        -- specialize H1 with (evt, tst).
+           specialize in_eq with (a := (evt, tst))(l := tr). intros.
+           eapply in_cons in H2.
+           apply H1 in H2.
+           simpl in H2.
+           lia.
+        -- destruct H1.
+           destruct x as [ ev ts ].
+           simpl in H1.
+           destruct H1 as ( Hts & Hin & Hgap ).
+           destruct Hin.
+           ++ inversion H1. lia.
+           ++ destruct H.
+              eapply sorted_ts_in_order in H2.
+              2: apply H1.
+              lia.
+      * apply IHtr.
+        -- apply H.
+        -- intros.
+           pose proof H1.
+           eapply incl_tl in H1.
+           2: apply incl_refl.
+           apply H0 in H1.
+           destruct H1.
+           ++ left.
+              intros.
+              apply H1.
+              eapply incl_tl.
+              2: apply H3.
+              apply incl_refl.
+           ++ right.
+              destruct H1.
+              exists x0.
+              split; [ | split ].
+              ** apply H1.
+              ** destruct H1 as ( Htscmp & Hin & Hgap ).                 
+                 destruct Hin.
+                 {
+                   destruct x as [ ev' ts' ].
+                   eapply sorted_ts_in_order in H.
+                   2: {
+                     simpl.
+                     right.
+                     apply H2.
+                   }
+                   rewrite <- H1 in Htscmp.
+                   simpl in Htscmp.
+                   apply Arith_base.le_not_gt_stt in H.
+                   contradiction.
+                 }
+                 apply H1.
+              ** apply H1.
+Qed.
+
+Fixpoint first_sync (tr : list TimedEvent) : option nat :=
+  match tr with
+  | [] => None
+  | ((id, ev), ts) :: tr' =>
+      match ev with
+      | SYNC => Some ts
+      | _ => first_sync tr'
+      end
+  end.
+
+Fixpoint last_sync (tr : list TimedEvent) : option nat :=
+  match tr with
+  | [] => None
+  | ((id, ev), ts) :: tr' =>
+      match ev with
+      | SYNC =>
+          match (last_sync tr') with
+          | None => Some ts
+          | Some v => Some v
+          end
+      | _ => last_sync tr'
+      end
+  end.
+
+Definition first_event (tr : list TimedEvent) : option TimedEvent :=
+  match tr with
+  | [] => None
+  | x :: tr' => Some x
+  end.
+
+Definition first_event_ts (tr : list TimedEvent) : option nat :=
+  match first_event tr with
+  | None => None
+  | Some (ev, ts) => Some ts
+  end.
+
+Fixpoint last_event (tr : list TimedEvent) : option TimedEvent :=
+  match tr with
+  | [] => None
+  | [x] => Some x
+  | x :: tr' => last_event tr'
+  end.
+
+Definition last_event_ts (tr : list TimedEvent) : option nat :=
+  match last_event tr with
+  | None => None
+  | Some (ev, ts) => Some ts
+  end.
+
+Lemma last_event_ts_some :
+  forall ts tr,
+    last_event_ts tr = Some ts -> exists ev, last_event tr = Some (ev, ts).
+Proof.
+  intros.
+  unfold last_event_ts in H.
+  remember (last_event tr) as le.
+  destruct le.
+  - destruct t as [ evt tst ].
+    exists evt.
+    inversion H.
+    reflexivity.
+  - inversion H.
+Qed.    
+
+(* Adding an element to the front does not change last event *)
+Lemma last_event_append_front :
+  forall x tr,
+    tr <> [] -> last_event tr = last_event (x :: tr).
+Proof.
+  intros.
+  destruct tr.
+  - firstorder.
+  - reflexivity.
+Qed.
+
+(* Extending the list in front does not change last event *)
+Lemma last_event_extend_front :
+  forall l tr,
+    tr <> [] -> last_event tr = last_event (l ++ tr).
+Proof.
+  intros.
+  induction l.
+  - firstorder.
+  - destruct tr.
+    + firstorder.
+    + specialize app_cons_not_nil with TimedEvent l tr t. intros.
+      apply not_eq_sym in H0.
+      eapply last_event_append_front in H0.
+      rewrite <- app_comm_cons.
+      rewrite IHl.
+      apply H0.
+Qed.
+
+(* The last event of the list is in the list *)
+Lemma last_event_in :
+  forall x tr,
+    last_event tr = Some x -> In x tr.
+Proof.
+  intros.
+  induction tr.
+  - inversion H.
+  - destruct tr.
+    + inversion H. firstorder.
+    + erewrite <- last_event_append_front in H.
+      2: apply not_eq_sym; apply nil_cons.
+      apply IHtr in H.
+      right. apply H.
+Qed.
+
+(* Every element in a sorted list has timestamp no higher than the last element *)
+Lemma sorted_ts_cmp_last :
+  forall x y tr,
+    sorted_ts tr ->
+    last_event tr = Some y ->
+    In x tr ->
+    get_ts x <= get_ts y.
+Proof.
+  intros.
+  induction tr.
+  - inversion H0.
+  - destruct a as [ eva tsa ]. destruct tr.
+    + inversion H0.
+      inversion H1.
+      * subst. firstorder.
+      * inversion H2.
+    + destruct H1.
+      * apply last_event_in in H0.
+        subst.
+        destruct y as [ evy tsy ].
+        eapply sorted_ts_in_order; unfold get_ts in *.
+        2: apply H0.
+        apply H.
+      * eapply IHtr.
+        -- destruct t as [ evt tst ]. apply H.
+        -- erewrite last_event_append_front.
+           2: apply not_eq_sym; apply nil_cons.
+           apply H0.
+        -- apply H1.
+Qed.      
+
+(* If the first and last event of a list is close enough, the entire list is bounded *)
+Lemma bounded_events_in_btw :
+  forall x y tr link_delay,
+    first_event tr = Some x ->
+    last_event tr = Some y ->
+    sorted_ts tr ->
+    gap_ok link_delay x y ->
+    bounded_trace tr link_delay.
+Proof.
+  intros. generalize dependent x.
+  induction tr; intros.
+  - firstorder.
+  - destruct tr.
+    + firstorder.
+    + destruct x as [ evx tsx ].
+      destruct t as [ evt tst ].
+      destruct y as [ evy tsy ].
+      split.
+      * inversion H. subst.
+        eapply sorted_ts_cmp_last in H1.
+        2: apply H0.
+        2: eapply in_cons; apply in_eq.
+        unfold gap_ok in *.
+        simpl in H1.
+        lia.
+      * eapply IHtr.
+        -- erewrite last_event_append_front.
+           2: apply not_eq_sym; apply nil_cons.
+           apply H0.
+        -- destruct a. apply H1.
+        -- reflexivity.
+        -- inversion H. subst.
+           unfold gap_ok in *.
+           destruct H1.
+           lia.
+Qed.
+
+(* Prove boundedness from subcomponents *)
+Lemma bounded_trace_from_split :
+  forall l1 x l2 link_delay,
+    bounded_trace (l1 ++ [x]) link_delay ->
+    bounded_trace (x :: l2) link_delay ->
+    bounded_trace (l1 ++ x :: l2) link_delay.
+Proof.
+  intros.
+  induction l1.
+  - apply H0.
+  - remember (l1 ++ x :: l2) as l. destruct l.
+    + apply app_cons_not_nil in Heql.
+      contradiction.
+    + simpl. rewrite <- Heql.
+      remember (l1 ++ [x]) as l'. destruct l'.
+      * apply eq_sym in Heql'.
+        apply app_eq_nil in Heql'.
+        destruct Heql'.
+        inversion H2.
+      * simpl in H.
+        rewrite <- Heql' in H.
+        rewrite <- app_nil_l with (l := l2) in Heql.
+        rewrite app_comm_cons in Heql.
+        rewrite app_assoc in Heql.
+        rewrite <- Heql' in Heql.
+        inversion Heql. subst.
+        split.
+        -- apply H.
+        -- apply IHl1. apply H.
+Qed.
+
+(* Sorted property distributes over ++ *)
+Lemma sorted_ts_dist :
+  forall l1 l2,
+    sorted_ts (l1 ++ l2) -> sorted_ts l1 /\ sorted_ts l2.
+Proof.
+  intros.
+  induction l1.
+  - split.
+    + firstorder.
+    + apply H.
+  - destruct a as [ eva tsa ].
+    destruct l2.
+    + split.
+      * rewrite app_nil_r in H. apply H.
+      * firstorder.
+    + remember (l1 ++ t :: l2) as l. destruct l.
+      * apply app_cons_not_nil in Heql.
+        contradiction.
+      * simpl in H. rewrite <- Heql in H.
+        destruct t0 as [ evt0 tst0 ].
+        split.
+        -- destruct l1.
+           ++ firstorder.
+           ++ inversion Heql. subst.
+              split.
+              ** apply H.
+              ** apply IHl1. apply H.
+        -- apply IHl1. apply H.
+Qed.
+
+Fixpoint ts_list (tr : list TimedEvent) : list nat :=
+  match tr with
+  | [] => []
+  | (ev, ts) :: tr' => ts :: (ts_list tr')
+  end.
+
+(* A sorted list can be split such that we get a list with all elements smaller than a timestamp, the smallest element with the timestamp, and the rest of the list *)
+Lemma in_split_first_ts :
+  forall x l,
+    sorted_ts l ->
+    In x l ->
+    exists l1 l2 y,
+      get_ts x = get_ts y
+      /\ l = l1 ++ y :: l2
+      /\ (forall z, In z l1 -> get_ts z < get_ts y).
+Proof.
+  intros.
+  induction l.
+  - inversion H0.
+  - destruct l.
+    + inversion H0.
+      * subst. exists [], [], x.
+        split; [ | split ].
+        -- reflexivity.
+        -- reflexivity.
+        -- intros. inversion H1.
+      * inversion H1.
+    + destruct a as [ eva tsa ].
+      destruct t as [ evt tst ].
+      destruct x as [ evx tsx ].
+      case_eq (tsa ?= tsx); intros Heq.
+      * apply Nat.compare_eq in Heq.
+        exists [], ((evt, tst) :: l), (eva, tsa).
+        split; [ | split ].
+        -- simpl.
+           subst.
+           reflexivity.
+        -- reflexivity.
+        -- intros. inversion H1.
+      * rewrite Nat.compare_lt_iff in Heq.
+        destruct H.
+        apply IHl in H1.
+        2: {
+          apply in_inv in H0.
+          destruct H0.
+          - inversion H0.
+            lia.
+          - apply H0.
+        }          
+        destruct H1 as ( l1 & l2 & y & Hts & Hl & Hgt ).
+        exists ((eva, tsa) :: l1), l2, y.
+        split; [ | split ].
+        -- apply Hts.
+        -- rewrite Hl. reflexivity.
+        -- intros.
+           destruct y as [ evy tsy ].
+           destruct z as [ evz tsz ].
+           apply in_inv in H1.
+           destruct H1.
+           ++ unfold get_ts in *. inversion H1. lia.
+           ++ apply Hgt. apply H1.
+      * rewrite Nat.compare_gt_iff in Heq.
+        apply sorted_ts_in_order in H0.
+        2: apply H.
+        lia.
+Qed.         
+
+(* If a trace is bounded, adding more events between the timestamps will not make it unbounded *)
+Lemma bounded_trace_more_events:
+  forall tr tr' link_delay,
+    incl tr tr' ->
+    sorted_ts tr ->
+    sorted_ts tr' ->
+    first_event_ts tr = first_event_ts tr' ->
+    last_event_ts tr = last_event_ts tr' ->
+    bounded_trace tr link_delay ->
+    bounded_trace tr' link_delay.
+Proof.
+  intros. generalize dependent tr'.
+  induction tr; intros.
+  - destruct tr'.
+    + firstorder.
+    + destruct t. inversion H2.
+  - destruct tr.
+    + destruct a as [ eva tsa ].
+      apply bounded_trace_in_sorted.
+      * apply H1.
+      * intros.
+        left.
+        intros.
+        pose proof H1.
+        destruct tr'.
+        -- apply incl_l_nil in H. inversion H.
+        -- destruct t as [ evt tst ].
+           destruct x as [ evx tsx ].
+           destruct y as [ evy tsy ].
+           simpl in H2. inversion H2. subst.
+           eapply sorted_ts_in_order in H1.
+           2: { apply H5. }
+           unfold last_event_ts in H3 at 1. simpl in H3.
+           apply eq_sym in H3.
+           apply last_event_ts_some in H3.
+           destruct H3.
+           eapply sorted_ts_cmp_last in H7.
+           2: { apply H3. }
+           2: apply H6.
+           unfold get_ts in *.
+           lia.
+    + destruct a as [ eva tsa ].
+      destruct t as [ evt tst ].
+      apply incl_cons_inv in H.
+      destruct H.
+      apply incl_cons_inv in H5.
+      destruct H5.
+      pose proof H5.
+      apply in_split_first_ts in H5.
+      2: apply H1.
+      destruct H5 as ( l1 & l2 & [ evy tsy ] & Hts & Hl & Hgt ).
+      simpl in Hts. subst.
+      apply bounded_trace_from_split.
+      * destruct l1.
+        -- firstorder.
+        -- destruct t as [ evt' tst' ].
+           unfold first_event_ts in H2. inversion H2. subst.
+           eapply bounded_events_in_btw.
+           ++ reflexivity.
+           ++ erewrite <- last_event_extend_front.
+              2: { unfold "<>"; intros. inversion H5. }
+              reflexivity.
+           ++ rewrite <- app_nil_l with (l := l2) in H1.
+              rewrite app_comm_cons in H1.
+              rewrite app_assoc in H1.
+              apply sorted_ts_dist in H1.
+              apply H1.
+           ++ simpl. apply H4.
+      * eapply IHtr.
+        -- apply H0.
+        -- apply H4.
+        -- apply incl_cons.
+           ++ rewrite in_app_iff in H7.
+              destruct H7.
+              ** apply Hgt in H5.
+                 simpl in H5.
+                 lia.
+              ** apply H5.
+           ++ unfold incl.
+              intros.
+              unfold incl in H6.
+              specialize H6 with a.
+              destruct a as [ eva' tsa' ].
+              pose proof H5.
+              apply H6 in H5.
+              rewrite in_app_iff in H5.
+              destruct H5.
+              ** apply Hgt in H5.
+                 simpl in H5.
+                 destruct H0.
+                 eapply sorted_ts_in_order in H9.
+                 2: apply in_cons; apply H8.
+                 lia.
+              ** apply H5.
+        -- apply sorted_ts_dist in H1.
+           apply H1.
+        -- reflexivity.
+        -- unfold last_event_ts in H3.
+           rewrite <- last_event_append_front in H3.
+           2: { apply not_eq_sym. apply nil_cons. }
+           rewrite <- last_event_extend_front in H3.
+           2: { apply not_eq_sym. apply nil_cons. }
+           apply H3.
+Qed.
+
+Lemma not_nil_last_event :
+  forall tr,
+    tr <> [] -> last_event tr <> None.
+Proof.
+  intros.
+  induction tr.
+  - contradiction.
+  - destruct tr.
+    + simpl. unfold "<>". intros. inversion H0.
+    + rewrite <- last_event_append_front.
+      2: apply not_eq_sym; apply nil_cons.
+      apply IHtr.
+      apply not_eq_sym; apply nil_cons.
+Qed.
+
+Lemma last_event_nil :
+  forall tr,
+    last_event tr = None -> tr = [].
+Proof.
+  intros.
+  induction tr.
+  - reflexivity.
+  - destruct tr.
+    + inversion H.
+    + inversion H.
+      apply IHtr in H1.
+      inversion H1.
+Qed.
+
+Lemma consume_loop_last_event_bound :
+  forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p',
+    consume_loop ts ptr ptr_last_sync delay link_delay (h, (tr, p)) = (res, (h', (tr', p'))) ->
+    sorted_ts (tr ++ ts) ->
+    (tr ++ ts = [] /\ tr' = []) \/
+      (exists x y, last_event (tr ++ ts) = Some x /\
+                     last_event tr' = Some y /\
+                     get_ts x >= get_ts y).
+Proof.
+  intros.
+  generalize dependent p'. generalize dependent tr'. generalize dependent h'.
+  generalize dependent p. generalize dependent tr. generalize dependent h.
+  induction ts; intros.
+  - inversion H. subst. destruct tr'.
+    + left. split; reflexivity.
+    + right. remember (last_event (t :: tr')) as e. destruct e.
+      * exists t0, t0. split; [ | split ].
+        -- rewrite app_nil_r. apply eq_sym. apply Heqe.
+        -- reflexivity.
+        -- lia.
+      * apply eq_sym in Heqe.
+        apply last_event_nil in Heqe.
+        inversion Heqe.
+  - right.
+    
+    destruct a as [ [ id type ] ts_ev ].
+    simpl in H.
+    unfold bind in H.
+
+    find_equivalences.
+
+    apply IHts in H.
+    + destruct H.
+      * destruct H.
+        apply app_eq_nil in H.
+        destruct H.
+        subst.
+
+    
+    
+
+(* What property do we need between the last events and first events? *)
+Lemma consume_loop_all_sync_bounded :
+  forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p' x y,
+    consume_loop ts ptr ptr_last_sync delay link_delay (h, (tr, p)) = (res, (h', (tr', p'))) ->
+    all_sync ts ->
+    bounded_trace tr link_delay ->
+    bounded_trace ts link_delay ->
+    last_event tr = Some x ->
+    first_event ts = Some y ->
+    gap_ok link_delay x y ->
+    bounded_trace tr' link_delay.
+Proof.
+  intros.
+  
+
+Lemma consume_loop_bounded :
+  forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p',
+    consume_loop ts ptr ptr_last_sync delay link_delay (h, (tr, p)) = (res, (h', (tr', p'))) ->
+    bounded_trace tr link_delay ->
+    bounded_trace (sync_filter ts) link_delay ->
+    bounded_trace tr' link_delay.
+Proof.
+  intros.
+  
+
+(* Not true due to delay *)
+Lemma consume_loop_bounded_from_sync :
+  forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p' ts0 tr0 p0 res0 h0' tr0' p0',
+    consume_loop ts ptr ptr_last_sync delay link_delay (h, (tr, p)) = (res, (h', (tr', p'))) ->
+    consume_loop ts0 ptr ptr_last_sync delay link_delay (h, (tr0, p0)) = (res0, (h0', (tr0', p0'))) ->
+    (forall x, In x tr -> In x tr0) ->
+    (forall y, In y p -> In y p0) ->
+    (forall z, In z ts -> In z ts0) ->
+    bounded_trace tr' link_delay ->
+    bounded_trace tr0' link_delay.
+Proof. Admitted.      
+
+Lemma consume_loop_all_sync_same :
+  forall ts ptr ptr_last_sync delay link_delay h tr res h' tr',
+    consume_loop ts ptr ptr_last_sync delay link_delay (h, (tr, [])) = (res, (h', (tr', []))) ->
+    all_sync tr ->
+    all_sync ts ->
+    tr ++ ts = tr'.
+Proof. Admitted.
+  
+                  
 
 (* Check that the trace is not live *)
 Lemma consume_loop_bounded :
