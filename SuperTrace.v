@@ -1,6 +1,7 @@
 (* SuperTrace : unordered events with (id, deps, duration) *)
 From Coq Require Import Lists.List Arith.PeanoNat Lia.
 From Coq Require Import Wellfounded Relation_Definitions Relation_Operators.
+From Equations Require Import Equations.
 Import ListNotations.
 Open Scope nat_scope.
 Require Import STR.Events STR.EventDSL. 
@@ -80,6 +81,9 @@ Definition simple_strace (str : STrace) : Prop :=
   get_se_dur ev = 1.
 
 
+Definition unique_ids (tr : STrace) : Prop :=
+  forall e1 e2, In e1 tr -> In e2 tr -> se_id e1 = se_id e2 -> e1 = e2.
+
 Lemma find_se_in :
   forall sid tr ev,
     find_se sid tr = Some ev ->
@@ -105,6 +109,67 @@ Proof.
     inversion H. rewrite Heq. 
     rewrite H1. reflexivity.      
     apply IHtr in H. auto. 
+Qed.
+
+
+Lemma find_se_unique :
+  forall tr sid e1 e2,
+    unique_ids tr ->
+    find_se sid tr = Some e1 ->
+    find_se sid tr = Some e2 ->
+    e1 = e2.
+Proof.
+  intros tr sid e1 e2 Huniq H1 H2.
+  pose proof (find_se_in _ _  H1) as Hin1.
+  pose proof (find_se_in _ _  H2) as Hin2.
+  pose proof (find_se_some_id _ _ H1) as Hid1.
+  pose proof (find_se_some_id _ _ H2) as Hid2.
+  specialize (Huniq e1 e2 Hin1 Hin2).
+  assert (se_id e1 = se_id e2).
+  { 
+    rewrite Hid1, Hid2. reflexivity.
+  }
+  firstorder.
+Qed.
+
+Lemma unique_ids_tail :
+  forall (h : SuperEvent) (t : STrace),
+    unique_ids (h :: t) ->
+    unique_ids t.
+Proof.
+  intros h t Huniq.
+  unfold unique_ids in *.
+  intros e1 e2 Hin1 Hin2 Heq.
+  apply Huniq.
+  right; assumption.
+  right; assumption.
+  assumption.
+Qed.
+
+Lemma in_find_se :
+  forall e tr,
+    unique_ids tr ->
+    In e tr ->
+    find_se (se_id e) tr = Some e.
+Proof.
+  intros e tr Huniq Hin.
+  induction tr as [|h t IH].
+  - inversion Hin.
+  - simpl in Hin. simpl.
+    destruct Hin as [Heq | Hin'].
+    + subst h. rewrite Nat.eqb_refl. reflexivity.
+    + destruct (Nat.eqb (se_id e) (se_id h)) eqn:Heq_id.
+      * apply Nat.eqb_eq in Heq_id. 
+        assert (h = e).
+        { apply Huniq; auto. 
+          - left; reflexivity.
+          - right; exact Hin'.
+        }
+        subst. reflexivity. 
+      * apply IH. 
+        apply unique_ids_tail in Huniq. 
+        exact Huniq.
+        assumption.
 Qed.
 
 Lemma in_length_strace :
@@ -394,3 +459,169 @@ Proof.
 Admitted.
 
 End Chain.
+
+
+Section RankSection.
+
+Context (tr  : STrace).
+Context (Hwf : acyclic_strace tr).      (* i.e.  well_founded (dep_rel tr) *)
+
+Instance dep_rel_wf : WellFounded (dep_rel tr) := Hwf.
+
+Definition inspect {A} (x : A) : { y : A | x = y } := exist _ x eq_refl.
+
+Equations? rank (e  : SuperEvent)
+               (Hin: In e tr) : nat
+         by wf e (dep_rel tr)
+  :=
+rank e Hin with inspect (se_deps e) := {
+| exist _ [] Hdeps => 1
+| exist _ deps  Hdeps =>
+    let dep_ranks :=
+        map (fun d =>
+               match inspect(find_se d tr) with
+               | exist _ (Some de) eq_refl =>
+                    match in_dec Nat.eq_dec d deps with
+                    | left Hd =>
+                         rank de (find_se_in d tr _)
+                    | right _ => 0
+                    end
+                | exist _ None _ => 0  
+               end) deps
+    in 
+      S (list_max dep_ranks)
+}.
+Proof.
+  destruct Hd.
+  all: remember e1 as e1'; 
+    clear Heqe1';
+    apply find_se_in in e1;
+    apply find_se_some_id in e1';
+    unfold dep_rel;
+    rewrite Hdeps;
+    subst;
+    firstorder.
+Qed.
+
+End RankSection.
+
+Definition ev0 : SuperEvent := mkSuperEvent 0 [] 10.
+Lemma ev0_in : In ev0 example_strace.
+Proof. simpl; left; reflexivity. Qed.
+
+(* 
+Lemma example_strace_wf : acyclic_strace example_strace.
+Proof.
+Admitted. 
+
+Compute
+  let ev := (mkSuperEvent 0 [] 10) in
+  @rank 
+      example_strace
+      example_strace_wf
+       ev
+       (ev0_in). 
+*)
+
+Print rank.
+
+Lemma rank_ge_1 (tr : STrace) (Hwf : well_founded (dep_rel tr)) :
+  forall e (Hin : In e tr), 1 <= rank Hwf e Hin.
+Proof.
+  intros e Hin.
+  funelim (rank Hwf e Hin).
+  all: simpl; lia.
+Qed.
+
+
+Lemma fold_left_max_monotone :
+  forall l k k',
+    k <= k' ->
+    fold_left Nat.max l k <= fold_left Nat.max l k'.
+Proof.
+  induction l as [|x xs IH]; intros k k' Hkk'.
+  - simpl. exact Hkk'.
+  - simpl. apply IH. apply Nat.max_le_compat_r. exact Hkk'.
+Qed.
+
+
+Lemma fold_left_max_lower_bound :
+  forall (l : list nat) (a : nat),
+    a <= fold_left Nat.max l a.
+Proof.
+  induction l as [|x xs IH].
+  - simpl. lia.
+  - simpl. intros. apply Nat.le_trans with (m := fold_left Nat.max xs a).
+    + apply IH.
+    + apply fold_left_max_monotone.
+      lia.
+Qed.
+
+
+Lemma in_list_max : forall (l : list nat) (x : nat),
+  In x l -> x <= list_max l.
+Proof.   
+  intros l.
+  unfold list_max.
+  induction l as [|a l IH]; intros x H.
+  - inversion H.
+  - simpl in *.
+    destruct H as [H | H].
+    + subst x.
+      apply fold_left_max_lower_bound.
+    + apply IH in H.
+      pose fold_left_max_monotone as Hm.
+      specialize (Hm l 0 a).
+      assert (0 <= a) by lia.
+      apply Hm in H0.
+      specialize (IH x).
+      lia.
+Qed.
+
+Lemma rank_ordered (tr : STrace) (Hwf : well_founded (dep_rel tr)) :
+  forall e (Hin : In e tr) e' (Hin' : In e' tr),
+    dep_rel tr e e' ->
+    rank Hwf e Hin < rank Hwf e' Hin'.
+Proof.
+  intros e Hin e' Hin' Hdep.
+  funelim (rank Hwf e' Hin').
+  - exfalso.
+    inversion Hdep as [_ [_ Hsid]].
+    rewrite Hdeps in Hsid.
+    inversion Hsid.
+  - unfold dep_rel in Hdep. destruct Hdep as [_ [_ Hin_id]].
+    assert (Hfind : find_se (se_id e0) tr = Some e0). 
+    { 
+      (* need uniqueness; proved already before. but uniqueness was not enforced here *)
+      admit.
+    }
+    set (val := rank Hwf e0 Hin0).
+    set (d0 := se_id e0).
+    assert (In (rank Hwf e0 Hin0)
+    (map (fun d =>
+            match find_se d tr with
+            | Some de =>
+                match Nat.eq_dec d d0 with
+                | left _ => rank Hwf e0 Hin0
+                | right _ => 0
+                end
+            | None => 0
+            end) (n :: l))).
+    {
+      admit.
+    }
+    apply in_list_max in H0.
+Abort.
+
+
+Lemma rank_bound (tr : STrace) (Hwf : well_founded (dep_rel tr)) :
+  forall e (Hin : In e tr), rank Hwf e Hin <= length tr.
+Proof.
+  intros e Hin.
+  funelim (rank Hwf e Hin).
+  - remember Hin as Hin'.
+    clear HeqHin'.
+    apply in_length_strace in Hin.
+    lia.
+  - admit.
+Admitted.
