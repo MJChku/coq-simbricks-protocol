@@ -61,7 +61,37 @@ Proof.
         -- eapply Nat.le_trans; apply H.
         -- apply H.
       * simpl. right. assumption.
-Qed.       
+Qed.
+
+(* Sorted property distributes over ++ *)
+Lemma sorted_ts_dist :
+  forall l1 l2,
+    sorted_ts (l1 ++ l2) -> sorted_ts l1 /\ sorted_ts l2.
+Proof.
+  intros.
+  induction l1.
+  - split.
+    + firstorder.
+    + apply H.
+  - destruct a as [ eva tsa ].
+    destruct l2.
+    + split.
+      * rewrite app_nil_r in H. apply H.
+      * firstorder.
+    + remember (l1 ++ t :: l2) as l. destruct l.
+      * apply app_cons_not_nil in Heql.
+        contradiction.
+      * simpl in H. rewrite <- Heql in H.
+        destruct t0 as [ evt0 tst0 ].
+        split.
+        -- destruct l1.
+           ++ firstorder.
+           ++ inversion Heql. subst.
+              split.
+              ** apply H.
+              ** apply IHl1. apply H.
+        -- apply IHl1. apply H.
+Qed.
 
 Lemma insert_ts_length :
   forall e q, length (insert_ts e q) = S (length q).
@@ -128,6 +158,47 @@ Proof.
   apply H.
 Qed.
 
+Lemma insert_ts_elements :
+  forall e q q',
+    insert_ts e q = q' -> (forall x, In x q' -> x = e \/ In x q).
+Proof.
+  intros. generalize dependent q'.
+  induction q; intros.
+  - left.
+    simpl in H.
+    subst.
+    simpl in H0.
+    destruct H0.
+    + rewrite H.
+      reflexivity.
+    + contradiction.
+  - simpl in H.
+    remember (get_ts e <=? get_ts a) as cmp.
+    destruct cmp.
+    + subst.
+      apply in_inv in H0.
+      destruct H0.
+      * left.
+        rewrite H.
+        reflexivity.
+      * right.
+        apply H.
+    + subst.
+      apply in_inv in H0.
+      destruct H0.
+      * right.
+        subst.
+        apply in_eq.
+      * apply IHq in H.y
+        2: reflexivity.
+        destruct H.
+        -- left.
+           apply H.
+        -- right.
+           apply in_cons.
+           apply H.
+Qed.
+           
 Lemma enq_event_ord_sorted :
   forall cfg e,
     sorted_ts (get_eq cfg) ->
