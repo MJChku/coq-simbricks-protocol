@@ -258,7 +258,7 @@ Proof.
       exact Hbound.
 Qed.
 
-
+(* simple trace is bounded *)
 Lemma strace_ts_is_bounded :
   forall str,
     simple_strace str -> 
@@ -439,25 +439,6 @@ Proof.
 Qed.
 
 
-Lemma chain_n_bound :
-  forall x k, 
-  chain_n k x -> k < length tr.
-Proof.
-  intros x k.
-  apply (well_founded_induction
-           (A := SuperEvent)
-           (R := dep_rel tr)
-           Hwf
-           (fun x =>
-              chain_n k x -> k < length tr)).
-  intros.
-  induction H0.
-  - apply in_length_strace in H0.
-    lia.
-  - specialize (H x0).
-    apply H in H1. apply H1.
-Admitted.
-
 End Chain.
 
 
@@ -502,6 +483,7 @@ Proof.
     subst;
     firstorder.
 Qed.
+
 
 End RankSection.
 
@@ -578,12 +560,15 @@ Proof.
       lia.
 Qed.
 
+Require Import Coq.Program.Equality.
+
 Lemma rank_ordered (tr : STrace) (Hwf : well_founded (dep_rel tr)) :
   forall e (Hin : In e tr) e' (Hin' : In e' tr),
+    unique_ids tr ->
     dep_rel tr e e' ->
     rank Hwf e Hin < rank Hwf e' Hin'.
 Proof.
-  intros e Hin e' Hin' Hdep.
+  intros e Hin e' Hin' Huniq Hdep.
   funelim (rank Hwf e' Hin').
   - exfalso.
     inversion Hdep as [_ [_ Hsid]].
@@ -591,28 +576,42 @@ Proof.
     inversion Hsid.
   - unfold dep_rel in Hdep. destruct Hdep as [_ [_ Hin_id]].
     assert (Hfind : find_se (se_id e0) tr = Some e0). 
-    { 
-      (* need uniqueness; proved already before. but uniqueness was not enforced here *)
-      admit.
+    {  
+      (* need uniqueness; proved already before. but uniqueness was not enforced here; added *)
+      apply in_find_se; auto.
     }
-    set (val := rank Hwf e0 Hin0).
-    set (d0 := se_id e0).
+    remember (
+    (map (fun d => _) (n :: l)))
+    as big_map eqn:Heqm in Heqcall.
+    remember ((map (fun d => _) (n :: l)))
+    as big_map' eqn:Heqm'.
+    rewrite <- Heqm in *.
+    clear Heqm.
     assert (In (rank Hwf e0 Hin0)
-    (map (fun d =>
-            match find_se d tr with
-            | Some de =>
-                match Nat.eq_dec d d0 with
-                | left _ => rank Hwf e0 Hin0
-                | right _ => 0
-                end
-            | None => 0
-            end) (n :: l))).
+    big_map).
     {
-      admit.
+      subst big_map.
+      rewrite Hdeps in Hin_id.
+      apply in_map_iff.
+      exists (se_id e0).
+      split.
+      - cbn [inspect] in *.
+        (* 
+        stuck here 
+        the destruct involves dependent types ??
+        and no destruct would work now.
+        *)
+        admit.
+      - exact Hin_id.
     }
+    (* lift to list_max here, proved already *)
     apply in_list_max in H0.
-Abort.
+    lia.
+    (* the proof finish here *)
+Admitted.
 
+
+(* bounded proof in two ways can't continue *)
 
 Lemma rank_bound (tr : STrace) (Hwf : well_founded (dep_rel tr)) :
   forall e (Hin : In e tr), rank Hwf e Hin <= length tr.
@@ -624,4 +623,24 @@ Proof.
     apply in_length_strace in Hin.
     lia.
   - admit.
+Admitted.
+
+
+Lemma chain_n_bound (tr : STrace) (Hwf : well_founded (dep_rel tr)) :
+  forall x k, 
+  chain_n tr k x -> k < length tr.
+Proof.
+  intros x k.
+  apply (well_founded_induction
+           (A := SuperEvent)
+           (R := dep_rel tr)
+           Hwf
+           (fun x =>
+              chain_n tr k x -> k < length tr)).
+  intros.
+  induction H0.
+  - apply in_length_strace in H0.
+    lia.
+  - specialize (H x0).
+    apply H in H1. apply H1.
 Admitted.
