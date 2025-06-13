@@ -189,7 +189,7 @@ Proof.
       * right.
         subst.
         apply in_eq.
-      * apply IHq in H.y
+      * apply IHq in H.
         2: reflexivity.
         destruct H.
         -- left.
