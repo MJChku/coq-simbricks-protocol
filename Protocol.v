@@ -142,6 +142,35 @@ Proof.
            ++ apply H3.
 Qed.
 
+Lemma sorted_split_elements :
+  forall l1 l2,
+    sorted_ts (l1 ++ l2) ->
+    (forall x y, In x l1 -> In y l2 -> get_ts x <= get_ts y).
+Proof.
+  intros.
+  induction l1.
+  - inversion H0.
+  - destruct x as [ evx tsx ].
+    destruct y as [ evy tsy ].
+    apply in_inv in H0.
+    destruct H0.
+    + subst.
+      rewrite <- app_comm_cons in H.
+      simpl.
+      eapply sorted_ts_in_order.
+      * apply H.
+      * apply in_cons. apply in_or_app.
+        right. apply H1.
+    + apply IHl1.
+      2: apply H0.
+      rewrite <- app_comm_cons in H.
+      remember (l1 ++ l2) as l. destruct l.
+      * firstorder.
+      * destruct a.
+        destruct t.
+        apply H.
+Qed.
+
 Lemma process_event_sorted_trace_and_queue :
   forall t my_ts delay h tr q res h' tr' q',
     process_event t my_ts delay (h, (tr, q)) = (res, (h', (tr', q'))) ->
@@ -1091,6 +1120,17 @@ Proof.
   - reflexivity.
 Qed.
 
+Lemma last_event_ts_append_front :
+  forall x tr,
+    tr <> [] -> last_event_ts tr = last_event_ts (x :: tr).
+Proof.
+  intros.
+  unfold last_event_ts.
+  rewrite <- last_event_append_front.
+  2: apply H.
+  reflexivity.
+Qed.
+
 (* Extending the list in front does not change last event *)
 Lemma last_event_extend_front :
   forall l tr,
@@ -1107,6 +1147,17 @@ Proof.
       rewrite <- app_comm_cons.
       rewrite IHl.
       apply H0.
+Qed.
+
+Lemma last_event_ts_extend_front :
+  forall l tr,
+    tr <> [] -> last_event_ts tr = last_event_ts (l ++ tr).
+Proof.
+  intros.
+  unfold last_event_ts.
+  rewrite <- last_event_extend_front.
+  2: apply H.
+  reflexivity.
 Qed.
 
 Lemma last_event_trunc_front :
@@ -1723,7 +1774,7 @@ Proof.
         destruct H.
         apply IHl1 in H0.
         apply H0.
-Qed.        
+Qed.
         
 Lemma consume_loop_all_sync_bounded :
   forall ts ptr ptr_last_sync delay link_delay h tr p res h' tr' p',
@@ -1732,6 +1783,7 @@ Lemma consume_loop_all_sync_bounded :
     sorted_ts (tr ++ ts) ->
     sorted_ts (tr ++ p) ->
     bounded_trace (tr ++ ts) link_delay ->
+    (p = [] \/ exists evt tst p', p = (evt, tst) :: p' /\ bounded_trace ((evt, tst) :: ts) link_delay) ->
     bounded_trace tr' link_delay.
 Proof.
   intros.
@@ -1752,16 +1804,107 @@ Proof.
       - destruct t; apply H0.
     }
     2: {
-      admit.
+      apply sorted_from_split.
+      - apply eq_sym in H8.
+        apply commit_q_sorted_trace_and_queue in H8.
+        2: {
+          simpl in H0.
+          destruct H0.
+          subst.
+          apply sorted_from_split.
+          - apply sorted_ts_dist in H2.
+            apply H2.
+          - apply process_event_queue_remains_sorted in Heqretpe.
+            2: apply sorted_ts_dist in H2; apply H2.
+            apply Heqretpe.
+          - intros.
+            inversion Heqretpe.
+            eapply insert_ts_elements in H11.
+            2: apply H6.
+            destruct H11.
+            + admit.
+            + 
+        }
+        apply sorted_ts_dist in H8.
+        apply H8.
+      - assert ((@app EInst.TE trpe
+         (@cons TimedEvent
+            (@pair (prod nat Event) nat (@pair nat Event id type) ts_ev) ts)) = trpe ++ [(id, type, ts_ev)] ++ ts).
+        reflexivity.
+        rewrite H5 in H1.
+        rewrite app_assoc in H1.
+        apply sorted_ts_dist in H1.
+        apply H1.
+      - intros.
+        apply eq_sym in H8.
+        apply commit_q_trace_no_future_events in H8.
+        2: {
+          assert ((@app EInst.TE trpe
+         (@cons TimedEvent
+            (@pair (prod nat Event) nat (@pair nat Event id type) ts_ev) ts)) = trpe ++ [(id, type, ts_ev)] ++ ts).
+          reflexivity.
+          rewrite H7 in H1.
+          rewrite app_assoc in H1.
+          apply sorted_ts_dist in H1.
+          destruct H1.
+          apply no_future_events_from_last in H1.
+          apply H1.
+        }
+        eapply no_future_events_bound in H8.
+        2: apply H5.
+        apply sorted_ts_dist in H1.
+        destruct H1.
+        destruct y as [ evy tsy ].
+        eapply sorted_ts_in_order in H7.
+        2: apply in_cons; apply H6.
+        simpl. lia.
     }
     2: {
-      apply bounded_trace_in_sorted.
-      - admit.
-      - intros.
-        apply in_app_or in H4.
-        destruct H4.
+      destruct H4.
+      - unfold all_sync in H0. destruct H0.
+        subst.                
+        inversion Heqretpe.
+        subst.
+        simpl in H8.
+        rewrite Nat.leb_refl in H8.
+        inversion H8.
+        subst.
+        rewrite <- app_assoc.
+        apply H3.
+      - destruct H4 as ( evt & tst & pw' & H4 ).
+        destruct H4. subst.
+        destruct trpe.
         + admit.
-        + admit. 
+        + eapply bounded_trace_more_events.
+          6: apply H3.
+          * unfold incl.
+            intros.
+            apply in_app_or in H4.
+            destruct H4; [ | apply in_inv in H4; destruct H4 ].
+            -- apply eq_sym in H8.
+               eapply commit_q_trace_remains in H8.
+               2: apply H4.
+               apply in_or_app.
+               left. apply H8.
+            -- admit.
+            -- apply in_or_app.
+               right. apply H4.
+          * apply H1.
+          * (* Use from above *) admit.
+          * apply eq_sym in H8.
+            apply commit_q_trace_prefix in H8.
+            destruct H8 as ( l & H8 ).
+            subst.
+            reflexivity.
+          * destruct ts.
+            -- admit.
+            -- rewrite <- last_event_ts_extend_front.
+               2: apply not_eq_sym; apply nil_cons.
+               rewrite <- last_event_ts_extend_front.
+               2: apply not_eq_sym; apply nil_cons.
+               rewrite <- last_event_ts_append_front.
+               2: apply not_eq_sym; apply nil_cons.
+               reflexivity.
     }
     2: {
       apply process_event_sorted_trace_and_queue in Heqretpe.
@@ -1770,16 +1913,43 @@ Proof.
         assert ((@app EInst.TE trpe
          (@cons TimedEvent
             (@pair (prod nat Event) nat (@pair nat Event id type) ts_ev) ts)) = trpe ++ [(id, type, ts_ev)] ++ ts) by reflexivity.
-          rewrite H4 in H1.
+          rewrite H5 in H1.
           rewrite app_assoc in H1.
           apply sorted_ts_dist in H1.
           apply H1.
         }
         2: reflexivity.
-        apply eq_sym in H7.
-        apply commit_q_sorted_trace_and_queue in H7.
+        apply eq_sym in H8.
+        apply commit_q_sorted_trace_and_queue in H8.
         2: apply Heqretpe.
-        apply H7.
+        apply H8.
+    }
+    2: {
+      destruct pce.
+      - left. reflexivity.
+      - right. destruct t as ( evt & tst ).
+        exists evt, tst, pce.
+        split; [ reflexivity | ].
+        apply eq_sym in H8.
+        apply commit_q_no_more_to_commit in H8.
+        2: {
+          apply process_event_queue_remains_sorted in Heqretpe.
+          2: apply sorted_ts_dist in H2; apply H2.
+          apply Heqretpe.
+        }
+        unfold committed_to_time in H8.
+        destruct evt.
+        destruct H8.
+        apply bounded_trace_dist in H3.
+        destruct H3.
+        destruct ts.
+        + firstorder.
+        + destruct t as ( evt' & tst' ).
+          split.
+          * destruct H7.
+            unfold gap_ok in *.
+            lia.
+          * apply H7.
     }
     apply H.
 Admitted.              
@@ -1828,7 +1998,12 @@ Proof.
   intros.
   (* Split instead *)
   eapply bounded_trace_more_events.
-  - eapply incl_filter.
+  - unfold incl. intros.
+    eapply consume_loop_all_sync_in_trace.
+    + apply H.
+    + apply sorted_ts_dist in H1.
+      apply H1.
+    + 
   - pose proof H0.
     apply sorted_ts_dist in H0.
     destruct H0.
@@ -1841,7 +2016,9 @@ Proof.
     2: apply H0.
     2: apply H1.
     apply H.
-  - Admitted.
+  - 
+  - admit.
+  - admit.
   (* eapply consume_loop_all_sync_bounded. *)
   
 
